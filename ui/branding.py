@@ -1,7 +1,7 @@
 """The 5 AND 8 logo, recoloured for the dark UI, and the pulse it animates with.
 
 The artwork in media/ is black on opaque white, which is unusable as-is on a
-#14171c background. Rather than keep a second exported asset in step with the
+the dark UI background. Rather than keep a second exported asset in step with the
 first, the pixmap is tinted at runtime: the greyscale of the file becomes the
 alpha channel, so the white ground drops out and the mark takes whatever
 colour it is asked for.

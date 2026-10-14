@@ -11,7 +11,7 @@ import tempfile
 
 from PySide6.QtCore import QThreadPool, QMimeData, QUrl, QPointF, Qt
 from PySide6.QtGui import QPixmap, QColor, QDropEvent, QDragEnterEvent
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QFrame, QMenu
 from PySide6.QtWidgets import QLabel as QLabelType
 
 import config
@@ -956,6 +956,27 @@ def test_open_tasks_come_from_every_project_and_skip_finished_work():
     assert "Roto" not in [t["content"] for t in tasks]
 
 
+def test_a_shared_task_reaches_each_person_it_names_and_nobody_else():
+    sg = fakes.FakeShotgun()
+    fakes.add_task(sg, "Comp", owner="ravi@5and8.ai, jitesh@5and8.ai")
+    fakes.add_task(sg, "Roto", owner="Jitesh@5and8.ai;priya@5and8.ai")
+    fakes.add_task(sg, "Paint", owner="xjitesh@5and8.ai")
+    assert sorted(t["content"] for t in fakes.client(sg).open_tasks()) ==         ["Comp", "Roto"]
+
+
+def test_the_artist_filter_splits_a_shared_task_between_its_people():
+    from ui.home_tasks import HomeTasks
+
+    owner = config.TASK_OWNER_FIELD
+    home = HomeTasks(production=True)
+    home.set_tasks([dict(fakes.TASK, id=1, **{owner: "Ravi, Priya"}),
+                    dict(fakes.TASK, id=2, **{owner: "Priya"})])
+    box = home.artist_box
+    assert [box.itemText(i) for i in range(box.count())] ==         ["All artists", "Priya", "Ravi"]
+    box.setCurrentIndex(box.findData("Priya"))
+    assert sorted(t["id"] for t in home._rows) == [1, 2]
+
+
 def test_the_done_statuses_are_filtered_by_shotgrid_not_locally():
     c = fakes.client(_with_finished_work())
     c.open_tasks()
@@ -1431,6 +1452,43 @@ def test_artist_filter_shows_one_artists_tasks_in_everyone_only():
     assert len(home._rows) == 3, "Mine ignores the artist pick"
 
 
+def test_refresh_says_it_landed_even_when_nothing_changed():
+    from ui.home_tasks import HomeTasks
+
+    home = HomeTasks()
+    home.set_tasks([fakes.TASK])
+    home.refresh_btn.click()
+    home.set_tasks([], failed=True)
+    assert home.refresh_btn.text() == "Refresh", "a failed reload says nothing"
+    home.refresh_btn.click()
+    home.set_tasks([fakes.TASK])
+    assert home.refresh_btn.text().startswith("✓ Refreshed")
+    home.refresh_btn._flash.timeout.emit()
+    assert home.refresh_btn.text() == "Refresh"
+
+
+def test_home_rows_show_the_shots_thumbnail():
+    import ui.home_tasks as home_tasks
+    from ui.home_tasks import HomeTasks
+
+    pixmap = QPixmap(64, 36)
+    pixmap.fill(QColor("red"))
+    asked = []
+    saved = home_tasks.load_thumbnail
+    home_tasks.load_thumbnail = lambda url, done: (asked.append(url),
+                                                   done(pixmap))
+    try:
+        home = HomeTasks()
+        home.set_tasks([dict(fakes.TASK, **{"entity.Shot.image": "http://t"}),
+                        dict(fakes.TASK, id=2)])
+    finally:
+        home_tasks.load_thumbnail = saved
+    assert asked == ["http://t"], "no image, no fetch"
+    with_image = [r for r, t in enumerate(home._rows) if t["id"] != 2][0]
+    assert not home.table.item(with_image, 0).icon().isNull()
+    assert home.table.item(1 - with_image, 0).icon().isNull()
+
+
 def test_artist_column_is_only_shown_for_everyones_tasks():
     from ui.home_tasks import HomeTasks
 
@@ -1509,6 +1567,108 @@ def test_production_sees_every_artists_open_tasks_on_active_shows():
     artists = {win.home_tasks.table.item(r, win.home_tasks.COL_ARTIST).text()
                for r in range(4)}
     assert fakes.PRODUCER["email"] in artists
+
+
+def test_only_production_get_the_dashboard_link():
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    saved, config.DASHBOARD_URL = config.DASHBOARD_URL, "http://dash:8080"
+    try:
+        assert not MainWindow(fakes.client(sg), login="rahul",
+                              production=True).dashboard_btn.isHidden()
+        assert MainWindow(fakes.client(sg), login="jitesh",
+                          production=False).dashboard_btn.isHidden()
+        config.DASHBOARD_URL = ""
+        assert MainWindow(fakes.client(sg), login="rahul",
+                          production=True).dashboard_btn.isHidden(),             "no URL configured: no button"
+    finally:
+        config.DASHBOARD_URL = saved
+    settle()
+
+
+def test_client_notes_are_coloured_apart_from_internal_ones():
+    from notes_service import Message
+    from ui.notes_panel import MessageCard
+    from ui.task_notes import Bubble
+
+    def message(rule):
+        author = {"name": "X", "permission_rule_set": {"name": rule}}
+        return Message({"id": 1, "content": "hi"}, "note", author)
+
+    client, internal = message("Client"), message("Artist")
+    assert client.from_client and not internal.from_client
+    assert MessageCard(client, False).objectName() == "noteCardClient"
+    assert MessageCard(internal, False).objectName() == "noteCard"
+    assert Bubble(client, False).findChild(QFrame, "chatClient")
+    assert Bubble(internal, False).findChild(QFrame, "chatTheirs")
+    assert Bubble(client, True).findChild(QFrame, "chatMine"),         "your own note stays yours"
+
+
+def test_live_sync_reloads_only_for_events_that_touch_the_list():
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    fakes.add_task(sg, "Comp", task_id=501)
+    win = MainWindow(fakes.client(sg), login="jitesh")
+    settle()
+    assert win._event_id == 0, "the first poll only takes the starting id"
+    reloads = []
+    win._load_open_tasks = lambda: reloads.append(win._event_id)
+
+    other = {"event_type": "Shotgun_Task_Change", "entity": {"id": 999},
+             "attribute_name": "sg_status_list", "meta": {}}
+    win._on_sync((10, [other]))
+    assert reloads == [] and win._event_id == 10
+
+    mine = {"event_type": "Shotgun_Task_Change", "entity": {"id": 501},
+            "attribute_name": "sg_status_list", "meta": {}}
+    win._on_sync((11, [mine]))
+    assert reloads == [11]
+
+    given = dict(other, attribute_name=config.TASK_OWNER_FIELD,
+                 meta={"new_value": "ravi@5and8.ai, " + fakes.ARTIST["email"]})
+    win._on_sync((12, [given]))
+    assert reloads == [11, 12]
+
+
+def test_task_events_since_starts_from_the_newest_event():
+    import sg_client
+
+    class SG:
+        def find_one(self, *a, **k):
+            return {"id": 40}
+
+        def find(self, entity, filters, fields, **k):
+            self.filters = filters
+            return [{"id": 41}, {"id": 43}]
+
+    c = sg_client.SGClient.__new__(sg_client.SGClient)
+    c.sg = SG()
+    assert c.task_events_since(None) == (40, [])
+    last, events = c.task_events_since(40)
+    assert last == 43 and len(events) == 2
+    assert ["id", "greater_than", 40] in c.sg.filters
+
+
+def test_review_posts_the_note_before_the_status_and_leaves_mail_to_sg():
+    import status_mail
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    task = fakes.add_task(sg, "Comp")
+    win = MainWindow(fakes.client(sg), login="jitesh")
+    settle()
+    win._ask_status_note = lambda task, code: "Edge fixed"
+    mailed = []
+    saved = status_mail._send_email
+    status_mail._send_email = lambda: lambda *a: mailed.append(a)
+    try:
+        win.set_task_status(task, config.REVIEW_MAIL_STATUS)
+        settle()
+    finally:
+        status_mail._send_email = saved
+    order = [c[:2] for c in sg.calls if c[0] in ("create", "update")]
+    assert order == [("create", "Note"), ("update", "Task")], order
+    assert mailed == [], "the SG daemon mails the leads, not Flow"
+    assert "mailed by ShotGrid" in win.statusBar().currentMessage()
 
 
 def test_task_notes_chat_posts_a_signed_note_and_shows_it_as_mine():

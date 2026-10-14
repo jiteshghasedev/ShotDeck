@@ -789,6 +789,27 @@ class SGClient:
         """
         return self._my_tasks(project=None, statuses=statuses)
 
+    TASK_EVENTS = ["Shotgun_Task_New", "Shotgun_Task_Change",
+                   "Shotgun_Task_Retirement", "Shotgun_Task_Revival"]
+
+    def task_events_since(self, last_id):
+        """(newest event id, task events after last_id, oldest first).
+
+        last_id None only fetches the newest id, as the starting point: what
+        happened before Flow opened is already in the list it loaded.
+        """
+        newest = [{"field_name": "id", "direction": "desc"}]
+        if last_id is None:
+            row = self.sg.find_one("EventLogEntry", [], ["id"], order=newest)
+            return (row or {}).get("id", 0), []
+        events = self.sg.find(
+            "EventLogEntry",
+            [["id", "greater_than", last_id],
+             ["event_type", "in", self.TASK_EVENTS]],
+            ["entity", "attribute_name", "event_type", "meta"],
+            order=[{"field_name": "id", "direction": "asc"}], limit=500)
+        return (events[-1]["id"] if events else last_id), events
+
     def open_tasks(self, scope=MINE):
         """Unfinished tasks across all projects, for the home page.
 
@@ -822,11 +843,9 @@ class SGClient:
         else:
             if not self._owner_value:
                 return []
-            filters = [[
-                config.TASK_OWNER_FIELD,
-                config.TASK_OWNER_STRING_OP,
-                self._owner_value,
-            ]]
+            # "contains" so a task shared by several people reaches each of
+            # them; the exact match is made below.
+            filters = [[config.TASK_OWNER_FIELD, "contains", self._owner_value]]
         if project:
             filters.insert(
                 0, ["project", "is", {"type": "Project", "id": project["id"]}])
@@ -839,10 +858,13 @@ class SGClient:
             order=[{"field_name": "due_date", "direction": "asc"}],
         )
         if scope == REVIEW:
-            # "contains" also matches inside a longer name (al@ in sal@);
-            # keep only the tasks that list this exact person.
-            me = self._owner_value.lower()
-            tasks = [t for t in tasks if me in (
-                s.strip().lower() for s in
-                re.split(r"[,;]", t.get(config.TASK_LEAD_FIELD) or ""))]
-        return tasks
+            field = config.TASK_LEAD_FIELD
+        elif scope == EVERYONE or config.TASK_OWNER_IS_ENTITY:
+            return tasks
+        else:
+            field = config.TASK_OWNER_FIELD
+        # "contains" also matches inside a longer name (al@ in sal@);
+        # keep only the tasks that list this exact person.
+        me = self._owner_value.lower()
+        return [t for t in tasks if me in (
+            s.strip().lower() for s in re.split(r"[,;]", t.get(field) or ""))]

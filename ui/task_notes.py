@@ -38,13 +38,17 @@ class Bubble(QWidget):
         row.setSpacing(8)
 
         card = QFrame()
-        card.setObjectName("chatMine" if mine else "chatTheirs")
+        card.setObjectName("chatMine" if mine else
+                           "chatClient" if message.from_client
+                           else "chatTheirs")
         card.setMaximumWidth(520)
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 8, 12, 8)
         lay.setSpacing(3)
 
         meta = QLabel(("You" if mine else message.author_name)
+                      + ("  ·  CLIENT" if message.from_client and not mine
+                         else "")
                       + ("  ·  reply" if message.kind == "reply" else "")
                       + f"  ·  {_when(message.created_at)}")
         meta.setObjectName("chatMeta")

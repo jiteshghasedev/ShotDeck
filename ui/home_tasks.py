@@ -22,9 +22,10 @@ run in memory over the list that came back.
 """
 
 import datetime
+import re
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QHBoxLayout, QHeaderView,
     QLabel, QMenu, QPushButton, QStackedWidget, QTableWidget,
@@ -36,7 +37,9 @@ from sg_client import EVERYONE, MINE, REVIEW
 from . import theme, ui_state
 from .branding import LoadingPage
 from .software_page import TaskMenu
-from .widgets import DueDate, EmptyState, StatusPill
+from .widgets import (
+    DueDate, EmptyState, StatusPill, flash_refreshed, load_thumbnail,
+)
 
 ALL = "all"
 OVERDUE = "overdue"
@@ -175,7 +178,7 @@ class HomeTasks(TaskMenu, QWidget):
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setObjectName("termBtn")
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.clicked.connect(self.refresh_requested)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
         top.addWidget(self.refresh_btn)
         lay.addLayout(top)
 
@@ -215,6 +218,7 @@ class HomeTasks(TaskMenu, QWidget):
         header.sectionClicked.connect(self._on_header_clicked)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(38)
+        self.table.setIconSize(QSize(56, 32))
         self.table.setShowGrid(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -345,6 +349,10 @@ class HomeTasks(TaskMenu, QWidget):
 
     # -- data ---------------------------------------------------------------
 
+    def _on_refresh_clicked(self):
+        self._refresh_clicked = True
+        self.refresh_requested.emit()
+
     def set_loading(self):
         self._loading = True
         if not self._tasks:
@@ -371,16 +379,20 @@ class HomeTasks(TaskMenu, QWidget):
             return
         super().update_task(task_id, code)
 
-    def set_tasks(self, tasks):
+    def set_tasks(self, tasks, failed=False):
         self._tasks = tasks
         self._loading = False
+        if getattr(self, "_refresh_clicked", False):
+            self._refresh_clicked = False
+            if not failed:
+                flash_refreshed(self.refresh_btn)
         projects = {}
         for t in self._tasks:
             p = t.get("project") or {}
             if p.get("id") is not None:
                 projects[p["id"]] = p.get("name") or str(p["id"])
         self._fill_box(self.project_box, "All projects", projects)
-        artists = {a: a for a in map(self._artist, self._tasks) if a}
+        artists = {a: a for t in self._tasks for a in self._artists(t)}
         self._fill_box(self.artist_box, "All artists", artists)
         self._rebuild()
 
@@ -454,6 +466,12 @@ class HomeTasks(TaskMenu, QWidget):
         owner = task.get(config.TASK_OWNER_FIELD) or ""
         return owner.get("name", "") if isinstance(owner, dict) else owner
 
+    @classmethod
+    def _artists(cls, task):
+        """Each person a shared task names, for the artist filter."""
+        return [a.strip() for a in re.split(r"[,;]", cls._artist(task))
+                if a.strip()]
+
     def _values(self, task):
         return [
             task.get("content") or "",
@@ -469,7 +487,8 @@ class HomeTasks(TaskMenu, QWidget):
         artist = self.artist_box.currentData() if self.scope != MINE \
             else None
         if artist:
-            in_project = [t for t in in_project if self._artist(t) == artist]
+            in_project = [t for t in in_project
+                          if artist in self._artists(t)]
         self._refresh_chips(in_project)
         self._rows = self._sorted(filter_tasks(in_project, chip=self._chip))
 
@@ -481,6 +500,7 @@ class HomeTasks(TaskMenu, QWidget):
                 if c in (2, 3, self.COL_ARTIST):
                     item.setForeground(QColor(theme.TEXT_DIM))
                 self.table.setItem(r, c, item)
+            self._load_thumbnail(r, t)
 
             code = t.get("sg_status_list") or ""
             status = QTableWidgetItem(self._status_labels.get(code, code))
@@ -522,6 +542,23 @@ class HomeTasks(TaskMenu, QWidget):
                 + (f" for {artist}" if artist else "")
                 + (f" in {where}" if where else ""))
             self.stack.setCurrentWidget(self.filtered_empty)
+
+    def _load_thumbnail(self, row, task):
+        """The shot's or asset's image as the Task cell's icon, fetched in the
+        background and cached per URL by widgets.load_thumbnail."""
+        url = task.get("entity.Shot.image") or task.get("entity.Asset.image")
+        if not url:
+            return
+
+        def arrived(pixmap):
+            item = self.table.item(row, 0)
+            # A filter may have rebuilt the rows while this was in flight.
+            if pixmap.isNull() or not item or row >= len(self._rows) or                     self._rows[row]["id"] != task["id"]:
+                return
+            item.setIcon(QIcon(pixmap.scaled(
+                56, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+
+        load_thumbnail(url, arrived)
 
     def _notes_item(self, task):
         count, latest = self._notes.get(task["id"], (0, None))

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 import applog
 import review_service
 from . import jobs, theme
-from .widgets import EmptyState
+from .widgets import EmptyState, flash_refreshed
 
 log = applog.get()
 
@@ -141,7 +141,7 @@ class ReviewPage(QWidget):
         self.refresh_btn = QPushButton("↻ Refresh")
         self.refresh_btn.setObjectName("termBtn")
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.clicked.connect(self.refresh)
+        self.refresh_btn.clicked.connect(lambda: self.refresh(clicked=True))
         head.addWidget(self.refresh_btn)
         lay.addLayout(head)
 
@@ -173,7 +173,7 @@ class ReviewPage(QWidget):
         """Scope to one project, or None for everything the artist has."""
         self.project = project
 
-    def refresh(self):
+    def refresh(self, clicked=False):
         self._request += 1
         request = self._request
         project = self.project
@@ -188,6 +188,8 @@ class ReviewPage(QWidget):
             self.items = items
             self.service.read_state.prune(items)
             self._render()
+            if clicked:
+                flash_refreshed(self.refresh_btn)
 
         def failed(message):
             if request != self._request:

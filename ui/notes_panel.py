@@ -40,8 +40,9 @@ class MessageCard(QFrame):
     def __init__(self, message, can_modify, parent=None):
         super().__init__(parent)
         self.message = message
-        self.setObjectName("noteCard" if message.kind == "note"
-                           else "replyCard")
+        self.setObjectName(
+            "noteCardClient" if message.from_client
+            else "noteCard" if message.kind == "note" else "replyCard")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 8, 12, 8)
@@ -59,7 +60,8 @@ class MessageCard(QFrame):
         if role:
             # ShotGrid's own permission rule set, not a role Flow invented.
             chip = QLabel(role.upper())
-            chip.setObjectName("roleChip")
+            chip.setObjectName(
+                "roleChipClient" if message.from_client else "roleChip")
             head.addWidget(chip)
 
         when = QLabel(_when(message.created_at))

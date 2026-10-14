@@ -83,6 +83,11 @@ class Message:
             return rule.get("name") or ""
         return rule or ""
 
+    @property
+    def from_client(self):
+        """Written by someone ShotGrid's permission rule set calls a client."""
+        return "client" in self.author_role.lower()
+
     def written_by(self, user):
         return bool(user) and self.user.get("id") == user.get("id")
 

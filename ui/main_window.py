@@ -1,7 +1,9 @@
 import getpass
 
-from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QKeySequence, QShortcut
+import datetime
+
+from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QMenu, QPushButton, QStackedWidget, QMessageBox, QSplitter, QInputDialog,
@@ -57,6 +59,11 @@ class MainWindow(QMainWindow):
         self.task = None          # Task an app will be launched against
         self.pool = QThreadPool.globalInstance()
         self._jobs = set()        # in-flight workers, see _run()
+        self._event_id = None     # newest ShotGrid event seen, for live sync
+        self._syncing = False
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(max(config.SYNC_SECONDS, 1) * 1000)
+        self._sync_timer.timeout.connect(self._poll_sync)
 
         self.setWindowTitle(config.APP_TITLE)
         self.resize(1080, 720)
@@ -130,6 +137,17 @@ class MainWindow(QMainWindow):
         self.deliver_btn.clicked.connect(self.client_delivery)
         self.deliver_btn.hide()
         h.addWidget(self.deliver_btn)
+
+        self.dashboard_btn = QPushButton("Dashboard ↗")
+        self.dashboard_btn.setObjectName("termBtn")
+        self.dashboard_btn.setCursor(Qt.PointingHandCursor)
+        self.dashboard_btn.setToolTip(
+            "Open the ingestion and packaging dashboard in the browser")
+        self.dashboard_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(config.DASHBOARD_URL)))
+        self.dashboard_btn.setVisible(
+            self.production and bool(config.DASHBOARD_URL))
+        h.addWidget(self.dashboard_btn)
 
         self.term_btn = QPushButton("Terminal")
         self.term_btn.setObjectName("termBtn")
@@ -403,6 +421,52 @@ class MainWindow(QMainWindow):
         self.project_page.set_projects(projects)
         self.home_tasks.set_projects(projects)
         self._load_open_tasks()
+        if config.SYNC_SECONDS > 0:
+            self._poll_sync()                 # takes the starting event id
+            self._sync_timer.start()
+
+    # -- live sync -----------------------------------------------------------
+
+    def _poll_sync(self):
+        # One query at a time, and none while nobody can see the window.
+        if self._syncing or self.isMinimized():
+            return
+        self._syncing = True
+
+        def failed(message):
+            self._syncing = False
+            log.warning("live sync skipped: %s", message)
+
+        self._run(self.sg.task_events_since, self._on_sync, self._event_id,
+                  on_error=failed)
+
+    def _on_sync(self, result):
+        self._syncing = False
+        starting = self._event_id is None
+        self._event_id, events = result
+        if starting or not self._sync_relevant(events):
+            return
+        self._load_open_tasks()
+        self.statusBar().showMessage(
+            "ShotGrid changes synced "
+            + datetime.datetime.now().strftime("%H:%M"), 10000)
+
+    def _sync_relevant(self, events):
+        """Whether any event could change the home list as it stands."""
+        if self.home_tasks.scope == EVERYONE:
+            return bool(events)
+        shown = {t["id"] for t in self.home_tasks._tasks}
+        me = (self.sg.owner_value or "").lower()
+        for e in events:
+            if (e.get("entity") or {}).get("id") in shown:
+                return True
+            # A task newly given to this user, or to them to review. ShotGrid
+            # logs the fields set on a new task as changes too.
+            if me and e.get("attribute_name") in (config.TASK_OWNER_FIELD,
+                                                  config.TASK_LEAD_FIELD)                     and me in str((e.get("meta") or {}).get("new_value")
+                                  or "").lower():
+                return True
+        return False
 
     def _load_open_tasks(self):
         """The home page's task list: every unfinished task, all projects."""
@@ -414,7 +478,7 @@ class MainWindow(QMainWindow):
                   and self._on_open_tasks(tasks),
                   on_error=lambda m: (
                       log.warning("could not load open tasks: %s", m),
-                      self.home_tasks.set_tasks([])))
+                      self.home_tasks.set_tasks([], failed=True)))
 
     def _on_open_tasks(self, tasks):
         self.home_tasks.set_tasks(tasks)
@@ -631,6 +695,10 @@ class MainWindow(QMainWindow):
         self.home_tasks.update_task(task_id, code)
 
         def write():
+            # The note goes first: the SG daemon mails the leads on the
+            # status change and attaches the task's newest note.
+            if note:
+                self._post_status_note(task, note, code)
             self.sg.set_task_status(task_id, code)
             mailed = self._mail_status_change(task, note, old, code) \
                 if mails else ""
@@ -663,17 +731,20 @@ class MainWindow(QMainWindow):
             f"Note for {who} on '{task.get('content', '')}':")
         return text.strip() if ok else None
 
+    def _post_status_note(self, task, note, code):
+        """The artist's note on the task. A failure is logged, never stops
+        the status change."""
+        try:
+            self.sg.create_note(task["project"], None, note,
+                                f"Set to {code}", task)
+        except Exception as e:
+            log.warning("status note on task %s failed: %s", task["id"], e)
+
     def _mail_status_change(self, task, note, old, code):
-        """Post the note on the task and mail whoever acts next. On the
-        worker, after the status is saved: a failure here is reported, never
-        undoes it."""
-        if note:
-            try:
-                self.sg.create_note(task["project"], None, note,
-                                    f"Set to {code}", task)
-            except Exception as e:
-                log.warning("status note on task %s failed: %s",
-                            task["id"], e)
+        """Mail whoever acts next. On the worker, after the status is saved:
+        a failure here is reported, never undoes it."""
+        if code == config.REVIEW_MAIL_STATUS:
+            return "the leads are mailed by ShotGrid"
         try:
             to = status_mail.send(
                 self.sg.sg, task, notes_service.signer_name(self.login),

@@ -28,9 +28,8 @@ TASK_OWNER_MATCH_FIELD = "email"   # for CustomEntity use e.g. "sg_email"
 # that Task.sg_assigned_to actually stores. Set to "email" if tasks store
 # addresses, "name" if they store "Firstname Lastname", "login" for logins.
 TASK_OWNER_STRING_FIELD = "email"
-# Comparison operator for the string filter. Use "contains" if one task can
-# list several people in the same string.
-TASK_OWNER_STRING_OP = "is"
+# One task can name several people, separated by commas or semicolons
+# ("a@5and8.ai, b@5and8.ai"); it is then on each of their lists.
 
 # Email domain used to derive the current user's address from their OS login
 # (jitesh -> jitesh@5and8.ai). Override the whole address with SGDESK_USER_EMAIL
@@ -48,6 +47,8 @@ TASK_FIELDS = [
     # Deep fields, needed to build the folder path without a second query.
     "entity.Shot.sg_sequence",
     "entity.Asset.sg_asset_type",
+    # The shot's or asset's thumbnail, beside the task on the home page.
+    "entity.Shot.image", "entity.Asset.image",
 ]
 
 # Task statuses that mean the work is finished. The home page lists every
@@ -212,6 +213,9 @@ PRODUCTION_USERS = [
     s.strip() for s in os.environ.get("FLOW_PRODUCTION_USERS", "").split(",")
     if s.strip()
 ]
+# The ingestion / packaging dashboard. Production get a header button that
+# opens it in the browser; the dashboard does its own login. Unset hides it.
+DASHBOARD_URL = os.environ.get("FLOW_DASHBOARD_URL", "")
 # Setting a task to one of these in Flow mails production (status_mail.py):
 # the FLOW_PRODUCTION_MAIL addresses, or else the production logins above at
 # the studio's mail domain.
@@ -223,6 +227,11 @@ PRODUCTION_MAIL = [
     s.strip() for s in os.environ.get("FLOW_PRODUCTION_MAIL", "").split(",")
     if s.strip()
 ] or [f"{login}@{USER_EMAIL_DOMAIN}" for login in PRODUCTION_USERS]
+
+# Live sync: every this many seconds Flow asks ShotGrid for task events newer
+# than the last one it saw -- one small EventLogEntry query -- and reloads the
+# home task list only when one touches it. 0 turns it off.
+SYNC_SECONDS = int(os.environ.get("FLOW_SYNC_SECONDS", "60") or 0)
 
 # -- the review inbox ------------------------------------------------------
 
