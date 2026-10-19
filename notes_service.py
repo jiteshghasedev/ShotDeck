@@ -56,6 +56,11 @@ def signature(content):
 class Message:
     """A note or a reply, flattened into what the UI needs to draw one."""
 
+    # Set by task_chat: "task" for the task's own notes, "shot" for ones on
+    # its shot or asset, with `where` naming it ("SH010 · Lighting").
+    scope = "task"
+    where = ""
+
     def __init__(self, raw, kind, author=None, depth=0):
         self.raw = raw
         self.kind = kind                # "note" or "reply"
@@ -173,36 +178,75 @@ class NotesService:
         return sorted([e for e in events if e["when"]],
                       key=lambda e: e["when"], reverse=True)
 
-    def task_chat(self, task_id):
-        """Every note and reply on a task as one conversation, oldest first.
+    def _task_and_shot_notes(self, tasks, fields=None):
+        """{note id: note} for everything on these tasks or their shots and
+        assets: a note written for Lighting on SH010 reaches Comp too."""
+        entities = [t.get("entity") for t in tasks]
+        notes = (self.sg.notes_for_tasks([t["id"] for t in tasks], fields=fields)
+                 or []) + (self.sg.notes_for_entities(entities, fields=fields)
+                           or [])
+        return {n["id"]: n for n in notes}
 
-        Notes made on the task's versions carry the task too, so they show
-        here as well. Three queries, as for threads().
+    def task_chat(self, task):
+        """Every note and reply on a task or its shot, oldest first.
+
+        Notes made on the task's versions carry the task too. Notes on the
+        shot -- written on the shot itself, or for another of its tasks --
+        come back with scope "shot" and `where` saying which. Four queries.
         """
-        notes = self.sg.notes_for_tasks([task_id]) or []
+        notes = list(self._task_and_shot_notes([task]).values())
         if not notes:
             return []
         replies = self.sg.replies_for_notes([n["id"] for n in notes]) or []
         authors = self._authors(notes + replies)
+
+        entity_name = (task.get("entity") or {}).get("name") or ""
+        placed = {}                     # note id -> (scope, where)
+        for note in notes:
+            linked = note.get("tasks") or []
+            if any(link.get("id") == task["id"] for link in linked):
+                placed[note["id"]] = ("task", "")
+            else:
+                others = [link.get("name") for link in linked
+                          if link.get("name")]
+                placed[note["id"]] = ("shot", " · ".join(
+                    x for x in [entity_name] + others if x))
+
         messages = (
             [Message(n, "note", authors.get(self._user_id(n))) for n in notes]
             + [Message(r, "reply", authors.get(self._user_id(r)), depth=1)
                for r in replies])
+        for message in messages:
+            parent = message.id if message.kind == "note" else \
+                (message.raw.get("entity") or {}).get("id")
+            message.scope, message.where = placed.get(parent, ("task", ""))
         return sorted(messages, key=lambda m: str(m.created_at or ""))
 
-    def task_summary(self, task_ids):
-        """{task_id: (note count, newest note's created_at)} for a task list.
+    def task_summary(self, tasks):
+        """{task_id: (note count, newest note's created_at)} for a task list:
+        the notes task_chat would show for each, task and shot alike.
 
-        Only the two fields the column shows, for every task in one pass.
+        Only the fields the column needs, in two passes for the whole list.
         """
+        notes = self._task_and_shot_notes(
+            tasks, fields=["tasks", "note_links", "created_at"])
+        by_link = {}                    # (type, id) -> [note, ...]
+        for note in notes.values():
+            for link in (note.get("tasks") or []) + \
+                    (note.get("note_links") or []):
+                by_link.setdefault((link.get("type"), link.get("id")),
+                                   []).append(note)
+
         summary = {}
-        for note in self.sg.notes_for_tasks(
-                task_ids, fields=["tasks", "created_at"]) or []:
-            for link in note.get("tasks") or []:
-                count, latest = summary.get(link["id"], (0, None))
-                # Notes come back oldest first, so the last one seen is newest.
-                summary[link["id"]] = (count + 1,
-                                       note.get("created_at") or latest)
+        for task in tasks:
+            entity = task.get("entity") or {}
+            mine = {n["id"]: n for n in
+                    by_link.get(("Task", task["id"]), [])
+                    + by_link.get((entity.get("type"), entity.get("id")), [])}
+            if mine:
+                summary[task["id"]] = (len(mine), max(
+                    (n.get("created_at") for n in mine.values()),
+                    key=lambda v: str(v or "")))
         return summary
 
     # -- writing -----------------------------------------------------------

@@ -196,10 +196,10 @@ NOTES_MIN_REFRESH_SECONDS = 5
 
 # -- production view -------------------------------------------------------
 #
-# Leads and reviewers: a String field on Task holding the people who review
-# it, in the same form as TASK_OWNER_FIELD (several separated by commas).
-# Their "To Review" list is the tasks that name them here.
-TASK_LEAD_FIELD = os.environ.get("FLOW_TASK_LEAD_FIELD", "sg_lead_reviewer")
+# Leads and reviewers: ShotGrid's own Task.task_reviewers, a multi-entity
+# field of HumanUsers (and Groups). Their "To Review" list is the tasks that
+# name them there.
+TASK_LEAD_FIELD = os.environ.get("FLOW_TASK_LEAD_FIELD", "task_reviewers")
 # Setting a task to this status in Flow asks the artist for a note and mails
 # the task's leads (status_mail.py), through the pipeline's mailer.
 REVIEW_MAIL_STATUS = os.environ.get("FLOW_REVIEW_MAIL_STATUS", "prw")

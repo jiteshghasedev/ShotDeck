@@ -457,14 +457,22 @@ class MainWindow(QMainWindow):
             return bool(events)
         shown = {t["id"] for t in self.home_tasks._tasks}
         me = (self.sg.owner_value or "").lower()
+        owner = self.sg.owner or {}
         for e in events:
             if (e.get("entity") or {}).get("id") in shown:
                 return True
             # A task newly given to this user, or to them to review. ShotGrid
             # logs the fields set on a new task as changes too.
-            if me and e.get("attribute_name") in (config.TASK_OWNER_FIELD,
-                                                  config.TASK_LEAD_FIELD)                     and me in str((e.get("meta") or {}).get("new_value")
-                                  or "").lower():
+            attr, meta = e.get("attribute_name"), e.get("meta") or {}
+            if me and attr == config.TASK_OWNER_FIELD and \
+                    me in str(meta.get("new_value") or "").lower():
+                return True
+            # task_reviewers is a multi-entity field: its events list the
+            # links added rather than a new value.
+            if owner and attr == config.TASK_LEAD_FIELD and any(
+                    (a or {}).get("type") == owner.get("type")
+                    and (a or {}).get("id") == owner.get("id")
+                    for a in meta.get("added") or []):
                 return True
         return False
 
@@ -495,11 +503,11 @@ class MainWindow(QMainWindow):
 
     def _load_task_notes(self):
         """The Notes column: count and newest date, one pass for the list."""
-        ids = [t["id"] for t in self.home_tasks._tasks]
-        if not ids:
+        tasks = list(self.home_tasks._tasks)
+        if not tasks:
             return
         self._run(notes_service.NotesService(self.sg).task_summary,
-                  self.home_tasks.set_notes, ids,
+                  self.home_tasks.set_notes, tasks,
                   on_error=lambda m: log.warning(
                       "could not read task notes: %s", m))
 

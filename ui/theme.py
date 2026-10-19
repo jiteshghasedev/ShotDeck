@@ -294,6 +294,14 @@ QComboBox QAbstractItemView {{
     background: transparent;
 }}
 #chatMeta {{ color: {TEXT_FAINT}; font-size: 10px; }}
+#scopeChip {{
+    background: {SURFACE_SUNK}; color: {WARN}; border: 1px solid {BORDER};
+    border-radius: 3px; padding: 1px 6px; font-size: 10px;
+}}
+#dayDivider {{
+    color: {TEXT_FAINT}; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.6px; padding: 6px 0 2px 0;
+}}
 #chatBody {{ color: {TEXT}; font-size: 12px; }}
 
 /* ---- preflight ---- */

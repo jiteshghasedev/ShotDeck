@@ -532,6 +532,21 @@ class SGClient:
             )
         return rows
 
+    def notes_for_entities(self, entities, fields=None):
+        """Notes linked to any of these shots or assets, oldest first: the
+        ones written on the shot itself or on any of its tasks and versions.
+        Chunked like notes_for_tasks."""
+        links = [{"type": e["type"], "id": e["id"]} for e in entities or [] if e]
+        rows = []
+        for start in range(0, len(links), 500):
+            rows += self.sg.find(
+                "Note",
+                [["note_links", "in", links[start:start + 500]]],
+                fields or config.NOTE_FIELDS,
+                order=[{"field_name": "created_at", "direction": "asc"}],
+            )
+        return rows
+
     def notes_by_user(self, user, project=None, days=30):
         """Notes this artist wrote recently -- the ones replies can arrive on.
 
@@ -827,12 +842,13 @@ class SGClient:
             filters = [] if project else \
                 [["project.Project.sg_status", "is", "Active"]]
         elif scope == REVIEW:
-            if not self._owner_value:
+            if not self._owner:
                 return []
             # Asked for only here: until the site has the field, only this
             # list fails, not the artist's own.
             fields = fields + [config.TASK_LEAD_FIELD]
-            filters = [[config.TASK_LEAD_FIELD, "contains", self._owner_value]]
+            filters = [[config.TASK_LEAD_FIELD, "is",
+                        {"type": self._owner["type"], "id": self._owner["id"]}]]
         elif config.TASK_OWNER_IS_ENTITY:
             if not self._owner:
                 return []
@@ -857,14 +873,11 @@ class SGClient:
             "Task", filters, fields,
             order=[{"field_name": "due_date", "direction": "asc"}],
         )
-        if scope == REVIEW:
-            field = config.TASK_LEAD_FIELD
-        elif scope == EVERYONE or config.TASK_OWNER_IS_ENTITY:
+        if scope in (REVIEW, EVERYONE) or config.TASK_OWNER_IS_ENTITY:
             return tasks
-        else:
-            field = config.TASK_OWNER_FIELD
         # "contains" also matches inside a longer name (al@ in sal@);
         # keep only the tasks that list this exact person.
         me = self._owner_value.lower()
         return [t for t in tasks if me in (
-            s.strip().lower() for s in re.split(r"[,;]", t.get(field) or ""))]
+            s.strip().lower() for s in
+            re.split(r"[,;]", t.get(config.TASK_OWNER_FIELD) or ""))]

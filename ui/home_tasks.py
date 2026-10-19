@@ -12,8 +12,9 @@ This answers it without picking a project first:
 - the Notes column counts the task's ShotGrid notes and dates the newest
   (sortable); clicking it opens the task's notes as a chat.
 
-The Mine / To Review / Everyone switch shows instead the tasks that name you
-in config.TASK_LEAD_FIELD, or every artist's on every active show -- both
+The Mine / To Review / Everyone switch shows instead the tasks that list you
+in config.TASK_LEAD_FIELD (Task.task_reviewers), or every artist's on every
+active show -- both
 with an Artist column and filter. Production starts on Everyone.
 
 "Open" means any status not in config.TASK_DONE_STATUSES. That filter runs on

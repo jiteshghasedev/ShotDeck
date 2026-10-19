@@ -1526,11 +1526,11 @@ def test_any_artist_can_switch_home_to_everyones_tasks():
 def test_leads_see_the_tasks_that_name_them_as_reviewer():
     sg = fakes.FakeShotgun()
     lead = config.TASK_LEAD_FIELD
-    me = fakes.ARTIST["email"]
+    me = {"type": "HumanUser", "id": fakes.ARTIST["id"], "name": "Jitesh"}
     fakes.add_task(sg, "Comp", owner=fakes.PRODUCER["email"])[lead] = \
-        f"priya@5and8.ai, {me}"
+        [{"type": "HumanUser", "id": 77, "name": "Priya"}, me]
     fakes.add_task(sg, "Roto", owner=fakes.PRODUCER["email"])[lead] = \
-        "a" + me                            # a longer name is someone else
+        [{"type": "Group", "id": fakes.ARTIST["id"], "name": "Same id"}]
     fakes.add_task(sg, "Paint", owner=fakes.PRODUCER["email"])
 
     review = fakes.client(sg).open_tasks(scope="review")
@@ -1629,6 +1629,16 @@ def test_live_sync_reloads_only_for_events_that_touch_the_list():
     win._on_sync((12, [given]))
     assert reloads == [11, 12]
 
+    to_review = dict(other, attribute_name=config.TASK_LEAD_FIELD,
+                     meta={"added": [{"type": "HumanUser",
+                                      "id": fakes.ARTIST["id"]}]})
+    win._on_sync((13, [to_review]))
+    assert reloads == [11, 12, 13]
+    someone_else = dict(to_review, meta={"added": [{"type": "HumanUser",
+                                                    "id": 77}]})
+    win._on_sync((14, [someone_else]))
+    assert reloads == [11, 12, 13]
+
 
 def test_task_events_since_starts_from_the_newest_event():
     import sg_client
@@ -1697,3 +1707,55 @@ def test_task_notes_chat_posts_a_signed_note_and_shows_it_as_mine():
     mine = [m for m in dialog.messages if dialog.service.can_modify(m)]
     assert [m.content for m in mine] == ["Fixed in v005"]
     assert dialog.compose.toPlainText() == ""
+
+
+def test_task_notes_show_the_shots_notes_too_tagged_and_filterable():
+    import notes_service
+    from ui.task_notes import TaskNotesDialog, SHOT, TASK, ALL
+
+    sg = fakes.FakeShotgun()
+    client = fakes.client(sg)
+    shot = {"type": "Shot", "id": fakes.SHOT["id"]}
+    sg.create("Note", {"content": "Rahul: Edge on frame 1012",
+                       "tasks": [{"type": "Task", "id": fakes.TASK["id"]}],
+                       "note_links": [shot], "user": fakes.PRODUCER})
+    sg.create("Note", {"content": "Rahul: Light is too warm",
+                       "tasks": [{"type": "Task", "id": 999,
+                                  "name": "Lighting"}],
+                       "note_links": [shot], "user": fakes.PRODUCER})
+    sg.create("Note", {"content": "Sam: Whole shot reads dark",
+                       "note_links": [shot], "user": fakes.CLIENT})
+    sg.create("Note", {"content": "Rahul: Not this shot",
+                       "note_links": [{"type": "Shot", "id": 1}],
+                       "user": fakes.PRODUCER})
+
+    dialog = TaskNotesDialog(client, fakes.PROJECT, fakes.TASK)
+    settle()
+    got = [(m.content, m.scope, m.where) for m in dialog.messages]
+    assert got == [("Edge on frame 1012", TASK, ""),
+                   ("Light is too warm", SHOT, "SH010 · Lighting"),
+                   ("Whole shot reads dark", SHOT, "SH010")], got
+    assert dialog.filter_buttons[SHOT].text() == "Shot  2"
+
+    from ui.task_notes import Bubble
+
+    def bubbles():
+        # The layout, not findChildren: the last filter's bubbles linger
+        # until Qt gets round to deleteLater.
+        items = (dialog.host_lay.itemAt(i).widget()
+                 for i in range(dialog.host_lay.count()))
+        return [w for w in items if isinstance(w, Bubble)]
+
+    assert len(bubbles()) == 3
+    dialog.set_filter(TASK)
+    settle()
+    assert len(bubbles()) == 1
+    dialog.set_filter(SHOT)
+    settle()
+    assert len(bubbles()) == 2
+    dialog.set_filter(ALL)
+
+    summary = notes_service.NotesService(client).task_summary(
+        [fakes.TASK, dict(fakes.TASK, id=7700, entity=None)])
+    assert summary[fakes.TASK["id"]][0] == 3, summary
+    assert 7700 not in summary
