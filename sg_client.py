@@ -114,7 +114,8 @@ class SGClient:
     def _reset_caches(self):
         self._owner = None
         self._owner_value = None
-        self._statuses = None            # Task statuses
+        self._owner_rel = None           # filter relation for sg_assigned_to
+        self._statuses = None           # Task statuses
         self._version_statuses = None    # Version statuses
         self._steps = None               # pipeline steps, aka departments
         self._version_field_cache = None
@@ -162,6 +163,23 @@ class SGClient:
         # No matching entity, or the field is empty on it: the email address is
         # still worth trying, since that is what the tasks most likely store.
         return user_email
+
+    def _owner_relation(self):
+        """Filter relation for Task.sg_assigned_to, by its type on this site.
+
+        A Text field takes "contains"; a List (dropdown) field only takes
+        "is" -- and holds one person, so nothing is shared there anyway.
+        """
+        if self._owner_rel is None:
+            try:
+                schema = self.sg.schema_field_read("Task", config.TASK_OWNER_FIELD)
+                kind = schema[config.TASK_OWNER_FIELD]["data_type"]["value"]
+            except Exception as e:
+                log.warning("could not read Task.%s type: %s",
+                            config.TASK_OWNER_FIELD, e)
+                kind = "text"
+            self._owner_rel = "is" if kind == "list" else "contains"
+        return self._owner_rel
 
     @property
     def owner(self):
@@ -861,7 +879,8 @@ class SGClient:
                 return []
             # "contains" so a task shared by several people reaches each of
             # them; the exact match is made below.
-            filters = [[config.TASK_OWNER_FIELD, "contains", self._owner_value]]
+            filters = [[config.TASK_OWNER_FIELD, self._owner_relation(),
+                        self._owner_value]]
         if project:
             filters.insert(
                 0, ["project", "is", {"type": "Project", "id": project["id"]}])
