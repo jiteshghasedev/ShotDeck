@@ -9,6 +9,10 @@ keeps the worker in a set until it finishes.
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+import applog
+
+log = applog.get()
+
 
 class WorkerSignals(QObject):
     result = Signal(object)
@@ -25,6 +29,9 @@ class Worker(QRunnable):
         try:
             self.signals.result.emit(self.fn(*self.args, **self.kwargs))
         except Exception as e:
+            # Callers only get str(e); keep the traceback for `main.py -v`.
+            log.debug("%s failed", getattr(self.fn, "__qualname__", self.fn),
+                      exc_info=True)
             self.signals.error.emit(str(e))
 
 
