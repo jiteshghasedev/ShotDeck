@@ -11,7 +11,7 @@ import tempfile
 
 from PySide6.QtCore import QThreadPool, QMimeData, QUrl, QPointF, Qt
 from PySide6.QtGui import QPixmap, QColor, QDropEvent, QDragEnterEvent
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QFrame, QMenu
 from PySide6.QtWidgets import QLabel as QLabelType
 
 import config
@@ -249,13 +249,37 @@ def _browser(sg):
     return browser
 
 
-def test_comparing_two_playable_versions_wipes_them_in_rv():
-    import rv_player
+def test_comparing_two_versions_opens_flows_player():
+    from ui import version_browser
     sg = fakes.FakeShotgun()
     for i in (1, 2):
         sg.add_version(f"SH010_Comp_v00{i}")
     browser = _browser(sg)
     a, b = browser._versions[0], browser._versions[1]
+    opened = []
+
+    class Recorder:
+        def __init__(self, sg, project, version_a, version_b, **kwargs):
+            opened.append((version_a, version_b))
+
+        def exec(self):
+            return 0
+
+    real = version_browser.VersionCompare
+    version_browser.VersionCompare = Recorder
+    try:
+        browser._compare(a, b)
+        browser._play_in_flow(a)
+    finally:
+        version_browser.VersionCompare = real
+    assert opened == [(a, b), (a, None)]
+
+
+def test_the_player_hands_its_wipe_to_rv():
+    import rv_player
+    from ui.version_compare import WIPE
+    a = _image_version("rv_a")
+    b = _image_version("rv_b", colour="#f87171")
     sent = {}
     playable, open_versions = rv_player.playable, rv_player.open_versions
     rv_player.playable = lambda v: True
@@ -263,7 +287,9 @@ def test_comparing_two_playable_versions_wipes_them_in_rv():
                                sent.update(versions=versions, mode=mode)
                                or (1, "log"))
     try:
-        browser._compare(a, b)
+        dialog = _compare(a, b)
+        dialog.set_mode(WIPE)
+        dialog.rv_btn.click()
     finally:
         rv_player.playable, rv_player.open_versions = playable, open_versions
     assert sent["mode"] == "wipe"
@@ -464,6 +490,25 @@ def test_replying_from_the_card_creates_a_reply():
     settle()
     assert sg.replies[-1]["content"] == "On it."
     assert sg.replies[-1]["entity"]["id"] == thread.id
+
+
+def test_answering_a_reply_stays_in_its_thread():
+    sg, browser = _browser_with_notes()
+    thread = browser.notes.threads[0]
+    browser.notes._start_reply(thread.replies[0])
+    browser.notes.compose.setPlainText("Agreed.")
+    browser.notes._post()
+    settle()
+    assert sg.replies[-1]["content"] == "Agreed."
+    assert sg.replies[-1]["entity"]["id"] == thread.id, \
+        "a reply to a reply belongs to the note"
+
+
+def test_replies_hang_off_a_thread_line():
+    from PySide6.QtWidgets import QFrame
+    sg, browser = _browser_with_notes()
+    rails = browser.notes.findChildren(QFrame, "threadRail")
+    assert len(rails) == sum(len(t.replies) for t in browser.notes.threads)
 
 
 def test_the_activity_tab_merges_notes_and_the_publish():
@@ -703,17 +748,154 @@ def test_missing_media_compares_without_crashing():
     dialog = _compare(a, b)
     assert dialog.media_a.error
     ok, why = dialog.image_view.difference_available()
-    assert not ok and "still images" in why
+    assert not ok and "two frames" in why
 
 
-def test_movies_get_the_ab_workflow_rather_than_a_fake_sync():
+def test_movies_play_in_the_compare_view_with_a_transport():
+    from ui.version_compare import WIPE
     mov = os.path.join(TMP, "SH010_comp_v006.mov")
     open(mov, "wb").write(b"\x00" * 1024)
     a = {"id": 1, "code": "v006", "sg_path_to_movie": mov}
     b = {"id": 2, "code": "v005", "sg_path_to_movie": mov}
     dialog = _compare(a, b)
-    assert dialog.stack.currentWidget() is dialog.movie_view
-    assert "A/B" in dialog.movie_note.text()
+    assert len(dialog.players) == 2, "one player per side"
+    assert dialog.transport.isVisible()
+    assert dialog.image_view.mode == WIPE, "a compare opens on the wipe"
+    dialog.close()
+    assert not dialog.players
+
+
+def test_a_version_not_on_this_machine_streams_the_shotgrid_upload():
+    from ui.version_compare import VersionMedia
+    media = VersionMedia({"id": 1, "code": "v006", "sg_uploaded_movie": {
+        "url": "https://sg.example/v006.mov?sig=1", "name": "v006.mov"}})
+    assert media.movie == "https://sg.example/v006.mov?sig=1"
+    assert media.source == media.STREAM
+
+
+def test_an_expired_stream_link_is_fetched_again_once():
+    from ui.version_compare import VersionMedia
+    sg = fakes.FakeShotgun()
+    row = sg.add_version("SH010_Comp_v006", sg_uploaded_movie={
+        "url": "https://sg.example/fresh.mov", "name": "v006.mov"})
+    dialog = _compare(_image_version("relink_a"), _image_version("relink_b"),
+                      sg)
+    media = VersionMedia(dict(row, sg_uploaded_movie={
+        "url": "https://sg.example/expired.mov"}))
+
+    class StubPlayer:
+        sources = []
+        def setSource(self, url): self.sources.append(url.toString())
+        def play(self): pass
+
+    player = StubPlayer()
+    dialog.players.append(player)
+    dialog._movie_error(media, player, "403 Forbidden")
+    settle()
+    assert player.sources == ["https://sg.example/fresh.mov"]
+    dialog._movie_error(media, player, "403 Forbidden")
+    assert "403" in media.error, "a second failure is believed"
+    dialog.players.remove(player)
+
+
+def test_a_cached_upload_plays_from_disk():
+    import media_cache
+    from ui.version_compare import VersionMedia
+    url = "https://sg.example/s3/abc/AD1008_v004.mov?sig=1"
+    local = media_cache.path_for(4004, url)
+    os.makedirs(os.path.dirname(local), exist_ok=True)
+    open(local, "wb").close()
+    media = VersionMedia({"id": 4004, "code": "v004",
+                          "sg_uploaded_movie": {"url": url}})
+    assert media.movie == local
+    assert media.source == media.CACHED
+    os.remove(local)
+
+
+def test_a_streaming_player_moves_onto_its_cached_copy_in_place():
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtMultimedia import QMediaPlayer
+    from ui.version_compare import VersionMedia
+
+    class StubPlayer(QObject):
+        mediaStatusChanged = Signal(object)
+
+        def __init__(self):
+            super().__init__()
+            self.sources, self.positions = [], []
+        def position(self): return 1234
+        def playbackState(self): return QMediaPlayer.PlayingState
+        def setSource(self, url):
+            self.sources.append(os.path.normpath(url.toLocalFile()))
+        def setPosition(self, ms): self.positions.append(ms)
+        def play(self): pass
+
+    dialog = _compare(_image_version("swap_a"), _image_version("swap_b"))
+    media = VersionMedia({"id": 77, "code": "v077", "sg_uploaded_movie": {
+        "url": "https://sg.example/s3/v077.mov"}})
+    player = StubPlayer()
+    dialog.players.append(player)
+    path = os.path.join(TMP, "v077.mov")
+    dialog._use_cached(media, player, path)
+    player.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadingMedia)
+    assert player.positions == [], "no seek until the copy has loaded"
+    player.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadedMedia)
+    assert player.sources == [path]
+    assert player.positions == [1234], "same frame, not back to the start"
+    assert media.source == media.CACHED
+    dialog.players.remove(player)
+    dialog._use_cached(media, player, path)          # closed meanwhile
+    assert player.sources == [path]
+
+
+def test_a_single_version_plays_without_the_compare_modes():
+    dialog = _compare(_image_version("solo_v001"), None)
+    assert dialog.windowTitle() == "Version Player"
+    assert not any(b.isVisible() for b in dialog.mode_buttons.buttons())
+    assert not dialog.notes_switch.isVisible()
+    assert _labels(dialog).count("solo_v001") >= 1
+
+
+def test_dragging_on_the_picture_moves_the_wipe():
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    from ui.version_compare import WIPE
+    dialog = _compare(_image_version("drag_a"), _image_version("drag_b"))
+    dialog.set_mode(WIPE)
+    view = dialog.image_view
+    view.resize(600, 300)
+    QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(150, 150))
+    assert abs(view.wipe - 0.25) < 0.01
+    assert dialog.wipe_slider.value() == 25
+
+
+def test_full_screen_keeps_the_picture_and_the_notes():
+    dialog = _compare(_image_version("full_a"), _image_version("full_b"))
+    dialog.toggle_fullscreen()
+    settle(200)
+    assert dialog.isFullScreen()
+    assert not dialog.meta_host.isVisible()
+    assert dialog.notes_panel.isVisible()
+    dialog.toggle_fullscreen()
+    settle(200)
+    assert dialog.meta_host.isVisible()
+
+
+def test_the_notes_fold_away_for_the_full_picture():
+    from PySide6.QtTest import QTest
+    from ui import ui_state
+    dialog = _compare(_image_version("fold_a"), _image_version("fold_b"))
+    width = dialog.image_view.width()
+    QTest.keyClick(dialog, Qt.Key_N)
+    settle(200)
+    assert not dialog.notes_host.isVisible()
+    assert dialog.notes_tab.isVisible(), "one click brings them back"
+    assert dialog.image_view.width() > width, "the picture takes the room"
+    assert ui_state.get("player_notes_hidden") is True
+    dialog.notes_tab.click()
+    settle(200)
+    assert dialog.notes_host.isVisible() and not dialog.notes_tab.isVisible()
+    assert ui_state.get("player_notes_hidden") is False
 
 
 def test_notes_are_visible_while_comparing():
@@ -724,11 +906,13 @@ def test_notes_are_visible_while_comparing():
     sg.add_note(b["id"], "Previous client feedback.", user=fakes.PRODUCER)
 
     dialog = _compare(a, b, sg)
+    assert "Reduce brightness." in _labels(dialog)
+    # Switching sides straight away still loads them: no refresh cooldown.
+    dialog.notes_buttons[1].click()
+    settle()
     text = _labels(dialog)
-    assert "Reduce brightness." in text
     assert "Previous client feedback." in text
-    # Each note says which version it belongs to.
-    assert "SH010_Comp_v006" in text and "SH010_Comp_v005" in text
+    assert "SH010_Comp_v005" in dialog.notes_panel.title.text()
 
 
 def test_compare_metadata_marks_what_differs():
@@ -795,8 +979,9 @@ def test_side_by_side_paints_both_versions():
 
     image = QImage(view.size(), QImage.Format_RGB32)
     view.render(image)
-    left = image.pixelColor(150, 150)
-    right = image.pixelColor(450, 150)
+    # The layout may widen the view past the resize; sample each half.
+    left = image.pixelColor(view.width() // 4, 150)
+    right = image.pixelColor(view.width() * 3 // 4, 150)
     assert left != right, "the two sides should not be painting the same thing"
     assert QColor("#3d9dff") in (left,) or left.blue() > left.red()
     assert right.red() > right.blue()
@@ -954,6 +1139,27 @@ def test_open_tasks_come_from_every_project_and_skip_finished_work():
     tasks = fakes.client(_with_finished_work()).open_tasks()
     assert {t["project"]["name"] for t in tasks} == {"UAT6", "SHOW002"}
     assert "Roto" not in [t["content"] for t in tasks]
+
+
+def test_a_shared_task_reaches_each_person_it_names_and_nobody_else():
+    sg = fakes.FakeShotgun()
+    fakes.add_task(sg, "Comp", owner="ravi@5and8.ai, jitesh@5and8.ai")
+    fakes.add_task(sg, "Roto", owner="Jitesh@5and8.ai;priya@5and8.ai")
+    fakes.add_task(sg, "Paint", owner="xjitesh@5and8.ai")
+    assert sorted(t["content"] for t in fakes.client(sg).open_tasks()) ==         ["Comp", "Roto"]
+
+
+def test_the_artist_filter_splits_a_shared_task_between_its_people():
+    from ui.home_tasks import HomeTasks
+
+    owner = config.TASK_OWNER_FIELD
+    home = HomeTasks(production=True)
+    home.set_tasks([dict(fakes.TASK, id=1, **{owner: "Ravi, Priya"}),
+                    dict(fakes.TASK, id=2, **{owner: "Priya"})])
+    box = home.artist_box
+    assert [box.itemText(i) for i in range(box.count())] ==         ["All artists", "Priya", "Ravi"]
+    box.setCurrentIndex(box.findData("Priya"))
+    assert sorted(t["id"] for t in home._rows) == [1, 2]
 
 
 def test_the_done_statuses_are_filtered_by_shotgrid_not_locally():
@@ -1431,6 +1637,43 @@ def test_artist_filter_shows_one_artists_tasks_in_everyone_only():
     assert len(home._rows) == 3, "Mine ignores the artist pick"
 
 
+def test_refresh_says_it_landed_even_when_nothing_changed():
+    from ui.home_tasks import HomeTasks
+
+    home = HomeTasks()
+    home.set_tasks([fakes.TASK])
+    home.refresh_btn.click()
+    home.set_tasks([], failed=True)
+    assert home.refresh_btn.text() == "Refresh", "a failed reload says nothing"
+    home.refresh_btn.click()
+    home.set_tasks([fakes.TASK])
+    assert home.refresh_btn.text().startswith("✓ Refreshed")
+    home.refresh_btn._flash.timeout.emit()
+    assert home.refresh_btn.text() == "Refresh"
+
+
+def test_home_rows_show_the_shots_thumbnail():
+    import ui.home_tasks as home_tasks
+    from ui.home_tasks import HomeTasks
+
+    pixmap = QPixmap(64, 36)
+    pixmap.fill(QColor("red"))
+    asked = []
+    saved = home_tasks.load_thumbnail
+    home_tasks.load_thumbnail = lambda url, done: (asked.append(url),
+                                                   done(pixmap))
+    try:
+        home = HomeTasks()
+        home.set_tasks([dict(fakes.TASK, **{"entity.Shot.image": "http://t"}),
+                        dict(fakes.TASK, id=2)])
+    finally:
+        home_tasks.load_thumbnail = saved
+    assert asked == ["http://t"], "no image, no fetch"
+    with_image = [r for r, t in enumerate(home._rows) if t["id"] != 2][0]
+    assert not home.table.item(with_image, 0).icon().isNull()
+    assert home.table.item(1 - with_image, 0).icon().isNull()
+
+
 def test_artist_column_is_only_shown_for_everyones_tasks():
     from ui.home_tasks import HomeTasks
 
@@ -1468,11 +1711,11 @@ def test_any_artist_can_switch_home_to_everyones_tasks():
 def test_leads_see_the_tasks_that_name_them_as_reviewer():
     sg = fakes.FakeShotgun()
     lead = config.TASK_LEAD_FIELD
-    me = fakes.ARTIST["email"]
+    me = {"type": "HumanUser", "id": fakes.ARTIST["id"], "name": "Jitesh"}
     fakes.add_task(sg, "Comp", owner=fakes.PRODUCER["email"])[lead] = \
-        f"priya@5and8.ai, {me}"
+        [{"type": "HumanUser", "id": 77, "name": "Priya"}, me]
     fakes.add_task(sg, "Roto", owner=fakes.PRODUCER["email"])[lead] = \
-        "a" + me                            # a longer name is someone else
+        [{"type": "Group", "id": fakes.ARTIST["id"], "name": "Same id"}]
     fakes.add_task(sg, "Paint", owner=fakes.PRODUCER["email"])
 
     review = fakes.client(sg).open_tasks(scope="review")
@@ -1511,6 +1754,170 @@ def test_production_sees_every_artists_open_tasks_on_active_shows():
     assert fakes.PRODUCER["email"] in artists
 
 
+def test_only_production_get_the_dashboard_link():
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    saved, config.DASHBOARD_URL = config.DASHBOARD_URL, "http://dash:8080"
+    try:
+        assert not MainWindow(fakes.client(sg), login="rahul",
+                              production=True).dashboard_btn.isHidden()
+        assert MainWindow(fakes.client(sg), login="jitesh",
+                          production=False).dashboard_btn.isHidden()
+        config.DASHBOARD_URL = ""
+        assert MainWindow(fakes.client(sg), login="rahul",
+                          production=True).dashboard_btn.isHidden(),             "no URL configured: no button"
+    finally:
+        config.DASHBOARD_URL = saved
+    settle()
+
+
+def test_client_notes_are_coloured_apart_from_internal_ones():
+    from notes_service import Message
+    from ui.notes_panel import MessageCard
+    from ui.task_notes import Bubble
+
+    def message(rule):
+        author = {"name": "X", "permission_rule_set": {"name": rule}}
+        return Message({"id": 1, "content": "hi"}, "note", author)
+
+    client, internal = message("Client"), message("Artist")
+    assert client.from_client and not internal.from_client
+    assert MessageCard(client, False).objectName() == "noteCardClient"
+    assert MessageCard(internal, False).objectName() == "noteCard"
+    assert Bubble(client, False).findChild(QFrame, "chatClient")
+    assert Bubble(internal, False).findChild(QFrame, "chatTheirs")
+    assert Bubble(client, True).findChild(QFrame, "chatMine"),         "your own note stays yours"
+
+
+def test_an_unreachable_shotgrid_shows_and_backs_off():
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    win = MainWindow(fakes.client(sg), login="jitesh")
+    win.show()
+    settle()
+    normal = win._sync_timer.interval()
+
+    sg.fail_find = RuntimeError("Unable to find the server")
+    win._poll_sync()
+    settle()
+    assert win.offline_btn.isVisible()
+    assert "Live sync paused" in win.offline_btn.text()
+    assert "Unable to find the server" in win.offline_btn.toolTip()
+    first = win._sync_timer.interval()
+    win._poll_sync()
+    settle()
+    assert win._sync_timer.interval() > first > normal, "retries space out"
+    assert win._sync_timer.interval() <= 300 * 1000
+
+    sg.fail_find = None
+    win.offline_btn.click()                    # Retry now
+    settle()
+    assert not win.offline_btn.isVisible()
+    assert win._sync_timer.interval() == normal
+    assert "Back online" in win.statusBar().currentMessage()
+
+
+def test_the_inbox_downloads_its_movies_ahead():
+    import media_cache
+    from ui import review_page
+    sg = fakes.FakeShotgun()
+    page = review_page.ReviewPage(fakes.client(sg))
+    seen = []
+    real = media_cache.prefetch
+    media_cache.prefetch = lambda versions, limit: seen.append(
+        ([v["id"] for v in versions], limit)) or 0
+
+    class Item:
+        def __init__(self, version):
+            self.version = version
+    try:
+        v1, v2 = {"id": 11}, {"id": 12}
+        page._prefetch([Item(v1), Item(v2), Item(v1), Item(None)])
+        settle()
+    finally:
+        media_cache.prefetch = real
+    assert seen == [([11, 12], config.REVIEW_PREFETCH)], \
+        "each version once, newest first"
+    assert not page._prefetching
+
+
+def test_live_sync_reloads_only_for_events_that_touch_the_list():
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    fakes.add_task(sg, "Comp", task_id=501)
+    win = MainWindow(fakes.client(sg), login="jitesh")
+    settle()
+    assert win._event_id == 0, "the first poll only takes the starting id"
+    reloads = []
+    win._load_open_tasks = lambda: reloads.append(win._event_id)
+
+    other = {"event_type": "Shotgun_Task_Change", "entity": {"id": 999},
+             "attribute_name": "sg_status_list", "meta": {}}
+    win._on_sync((10, [other]))
+    assert reloads == [] and win._event_id == 10
+
+    mine = {"event_type": "Shotgun_Task_Change", "entity": {"id": 501},
+            "attribute_name": "sg_status_list", "meta": {}}
+    win._on_sync((11, [mine]))
+    assert reloads == [11]
+
+    given = dict(other, attribute_name=config.TASK_OWNER_FIELD,
+                 meta={"new_value": "ravi@5and8.ai, " + fakes.ARTIST["email"]})
+    win._on_sync((12, [given]))
+    assert reloads == [11, 12]
+
+    to_review = dict(other, attribute_name=config.TASK_LEAD_FIELD,
+                     meta={"added": [{"type": "HumanUser",
+                                      "id": fakes.ARTIST["id"]}]})
+    win._on_sync((13, [to_review]))
+    assert reloads == [11, 12, 13]
+    someone_else = dict(to_review, meta={"added": [{"type": "HumanUser",
+                                                    "id": 77}]})
+    win._on_sync((14, [someone_else]))
+    assert reloads == [11, 12, 13]
+
+
+def test_task_events_since_starts_from_the_newest_event():
+    import sg_client
+
+    class SG:
+        def find_one(self, *a, **k):
+            return {"id": 40}
+
+        def find(self, entity, filters, fields, **k):
+            self.filters = filters
+            return [{"id": 41}, {"id": 43}]
+
+    c = sg_client.SGClient.__new__(sg_client.SGClient)
+    c.sg = SG()
+    assert c.task_events_since(None) == (40, [])
+    last, events = c.task_events_since(40)
+    assert last == 43 and len(events) == 2
+    assert ["id", "greater_than", 40] in c.sg.filters
+
+
+def test_review_posts_the_note_before_the_status_and_leaves_mail_to_sg():
+    import status_mail
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    task = fakes.add_task(sg, "Comp")
+    win = MainWindow(fakes.client(sg), login="jitesh")
+    settle()
+    win._ask_status_note = lambda task, code: "Edge fixed"
+    mailed = []
+    saved = status_mail._send_email
+    status_mail._send_email = lambda: lambda *a: mailed.append(a)
+    try:
+        win.set_task_status(task, config.REVIEW_MAIL_STATUS)
+        settle()
+    finally:
+        status_mail._send_email = saved
+    order = [c[:2] for c in sg.calls if c[0] in ("create", "update")]
+    assert order == [("create", "Note"), ("update", "Task")], order
+    assert mailed == [], "the SG daemon mails the leads, not Flow"
+    assert "mailed by ShotGrid" in win.statusBar().currentMessage()
+
+
 def test_task_notes_chat_posts_a_signed_note_and_shows_it_as_mine():
     from ui.task_notes import TaskNotesDialog
 
@@ -1537,3 +1944,55 @@ def test_task_notes_chat_posts_a_signed_note_and_shows_it_as_mine():
     mine = [m for m in dialog.messages if dialog.service.can_modify(m)]
     assert [m.content for m in mine] == ["Fixed in v005"]
     assert dialog.compose.toPlainText() == ""
+
+
+def test_task_notes_show_the_shots_notes_too_tagged_and_filterable():
+    import notes_service
+    from ui.task_notes import TaskNotesDialog, SHOT, TASK, ALL
+
+    sg = fakes.FakeShotgun()
+    client = fakes.client(sg)
+    shot = {"type": "Shot", "id": fakes.SHOT["id"]}
+    sg.create("Note", {"content": "Rahul: Edge on frame 1012",
+                       "tasks": [{"type": "Task", "id": fakes.TASK["id"]}],
+                       "note_links": [shot], "user": fakes.PRODUCER})
+    sg.create("Note", {"content": "Rahul: Light is too warm",
+                       "tasks": [{"type": "Task", "id": 999,
+                                  "name": "Lighting"}],
+                       "note_links": [shot], "user": fakes.PRODUCER})
+    sg.create("Note", {"content": "Sam: Whole shot reads dark",
+                       "note_links": [shot], "user": fakes.CLIENT})
+    sg.create("Note", {"content": "Rahul: Not this shot",
+                       "note_links": [{"type": "Shot", "id": 1}],
+                       "user": fakes.PRODUCER})
+
+    dialog = TaskNotesDialog(client, fakes.PROJECT, fakes.TASK)
+    settle()
+    got = [(m.content, m.scope, m.where) for m in dialog.messages]
+    assert got == [("Edge on frame 1012", TASK, ""),
+                   ("Light is too warm", SHOT, "SH010 · Lighting"),
+                   ("Whole shot reads dark", SHOT, "SH010")], got
+    assert dialog.filter_buttons[SHOT].text() == "Shot  2"
+
+    from ui.task_notes import Bubble
+
+    def bubbles():
+        # The layout, not findChildren: the last filter's bubbles linger
+        # until Qt gets round to deleteLater.
+        items = (dialog.host_lay.itemAt(i).widget()
+                 for i in range(dialog.host_lay.count()))
+        return [w for w in items if isinstance(w, Bubble)]
+
+    assert len(bubbles()) == 3
+    dialog.set_filter(TASK)
+    settle()
+    assert len(bubbles()) == 1
+    dialog.set_filter(SHOT)
+    settle()
+    assert len(bubbles()) == 2
+    dialog.set_filter(ALL)
+
+    summary = notes_service.NotesService(client).task_summary(
+        [fakes.TASK, dict(fakes.TASK, id=7700, entity=None)])
+    assert summary[fakes.TASK["id"]][0] == 3, summary
+    assert 7700 not in summary

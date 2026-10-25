@@ -4,25 +4,31 @@ Anything that decides how Flow looks belongs here rather than scattered
 through the widgets, so a restyle is one file.
 """
 
-# Surfaces, darkest to lightest.
-BG = "#14171c"
-SURFACE = "#1b1f26"
-SURFACE_HI = "#232833"
-SURFACE_SUNK = "#101317"
-BORDER = "#2a3039"
-BORDER_HI = "#39414d"
+# Surfaces, darkest to lightest. Blue-black rather than neutral grey: the
+# cool cast is most of what makes the UI read as a tool, not a web page.
+BG = "#10131a"
+SURFACE = "#171b24"
+SURFACE_HI = "#1f2532"
+SURFACE_SUNK = "#0b0e14"
+BORDER = "#262d3b"
+BORDER_HI = "#364052"
 
-TEXT = "#e6e9ef"
-TEXT_DIM = "#95a0b0"
-TEXT_FAINT = "#6b7684"
+TEXT = "#e8ecf3"
+TEXT_DIM = "#97a3b6"
+TEXT_FAINT = "#69758a"
 
-ACCENT = "#3d9dff"
-ACCENT_HI = "#6bb6ff"
-ACCENT_SUNK = "#1e5f9e"
+ACCENT = "#36a9ff"
+ACCENT_HI = "#7cc8ff"
+ACCENT_SUNK = "#1b5c99"
+# The accent as a wash: checked chips, selected rows, drop targets.
+ACCENT_GLOW = "rgba(54,169,255,0.12)"
 
 OK = "#34d399"
 WARN = "#fbbf24"
 ERROR = "#f87171"
+# Client notes stand apart from internal ones in every notes view.
+CLIENT = "#f0883e"
+CLIENT_SUNK = "#3a2618"
 
 # ShotGrid status short codes -> colour. Anything unknown falls back to grey.
 STATUS_COLOURS = {
@@ -67,7 +73,11 @@ QMainWindow, QWidget {{
 }}
 
 /* ---- header ---- */
-#header {{ background: {SURFACE}; border-bottom: 1px solid {BORDER}; }}
+#header {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 {SURFACE_HI}, stop:1 {SURFACE});
+    border-bottom: 1px solid {ACCENT_SUNK};
+}}
 /* The QWidget rule above paints every label {BG}, which on the {SURFACE}
    header shows as a dark block whose edge reads as a divider. Labels here are
    transparent; the avatar needs two ids to out-rank that and keep its fill. */
@@ -95,7 +105,7 @@ QMainWindow, QWidget {{
     border-radius: 13px; padding: 5px 12px; margin-right: 10px;
     color: {TEXT}; font-size: 12px;
 }}
-#taskSearch:focus {{ border-color: {ACCENT_SUNK}; background: {SURFACE}; }}
+#taskSearch:focus {{ border-color: {ACCENT}; background: {SURFACE}; }}
 #searchResults {{
     background: {SURFACE}; border: 1px solid {BORDER_HI};
     border-radius: {RADIUS_SM}px; color: {TEXT}; padding: 4px;
@@ -112,7 +122,7 @@ QMainWindow, QWidget {{
 }}
 #termBtn:hover {{ border-color: {BORDER_HI}; color: {TEXT}; }}
 #termBtn:checked {{
-    color: {ACCENT}; border-color: {ACCENT_SUNK}; background: rgba(61,157,255,0.10);
+    color: {ACCENT_HI}; border-color: {ACCENT_SUNK}; background: {ACCENT_GLOW};
 }}
 
 /* ---- home page ---- */
@@ -122,7 +132,7 @@ QMainWindow, QWidget {{
 }}
 #chip:hover {{ border-color: {BORDER_HI}; color: {TEXT}; }}
 #chip:checked {{
-    color: {ACCENT}; border-color: {ACCENT_SUNK}; background: rgba(61,157,255,0.10);
+    color: {ACCENT_HI}; border-color: {ACCENT_SUNK}; background: {ACCENT_GLOW};
 }}
 #launchBtn {{
     background: {SURFACE_HI}; border: 1px solid {BORDER};
@@ -130,7 +140,7 @@ QMainWindow, QWidget {{
     padding: 3px 10px; margin: 4px 0;
 }}
 #launchBtn[split="true"] {{ padding-right: 22px; }}
-#launchBtn:hover {{ border-color: {ACCENT_SUNK}; }}
+#launchBtn:hover {{ border-color: {ACCENT}; color: {ACCENT_HI}; }}
 #launchBtn::menu-indicator {{ image: none; width: 0; }}
 #launchBtn::menu-button {{ border-left: 1px solid {BORDER}; width: 18px; }}
 #sectionToggle {{
@@ -154,7 +164,7 @@ QLineEdit {{
     border-radius: {RADIUS_SM}px; padding: 7px 12px; color: {TEXT};
     selection-background-color: {ACCENT_SUNK};
 }}
-QLineEdit:focus {{ border-color: {ACCENT_SUNK}; background: {SURFACE}; }}
+QLineEdit:focus {{ border-color: {ACCENT}; background: {SURFACE}; }}
 
 QCheckBox {{ color: {TEXT_DIM}; spacing: 6px; }}
 QCheckBox::indicator {{
@@ -167,17 +177,19 @@ QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QTableWidget {{
     background: {BG}; border: none; gridline-color: transparent;
     alternate-background-color: {BG};
-    selection-background-color: rgba(61,157,255,0.14);
+    selection-background-color: {ACCENT_GLOW};
     selection-color: {TEXT};
 }}
 QTableWidget::item {{ padding: 0 12px; border-bottom: 1px solid {SURFACE}; }}
-QTableWidget::item:selected {{ color: {TEXT}; }}
+QTableWidget::item:selected {{
+    color: {TEXT}; border-bottom: 1px solid {ACCENT_SUNK};
+}}
 QTableWidget::item:hover {{ background: {SURFACE}; }}
 QHeaderView::section {{
     background: {BG}; color: {TEXT_FAINT}; border: none;
     border-bottom: 1px solid {BORDER};
-    padding: 8px 12px; font-weight: 600; font-size: 11px;
-    text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 8px 12px; font-weight: 600; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 1.2px;
 }}
 
 /* ---- tabs ---- */
@@ -227,6 +239,7 @@ QComboBox {{
     min-height: 18px;
 }}
 QComboBox:hover {{ border-color: {BORDER_HI}; color: {TEXT}; }}
+QComboBox:focus {{ border-color: {ACCENT}; }}
 QComboBox::drop-down {{ border: none; width: 18px; }}
 QComboBox::down-arrow {{ image: none; }}
 QComboBox QAbstractItemView {{
@@ -247,8 +260,18 @@ QComboBox QAbstractItemView {{
     background: {SURFACE_SUNK}; border: 1px solid {BORDER};
     border-left: 2px solid {BORDER_HI}; border-radius: {RADIUS_SM}px;
 }}
+#threadRail {{ background: {BORDER_HI}; border-radius: 1px; }}
 #noteSubject {{ color: {TEXT}; font-weight: 600; font-size: 12px; }}
 #noteBody {{ color: {TEXT_DIM}; font-size: 12px; }}
+#noteCardClient {{
+    background: {CLIENT_SUNK}; border: 1px solid {BORDER};
+    border-left: 2px solid {CLIENT}; border-radius: {RADIUS_SM}px;
+}}
+#roleChipClient {{
+    background: {CLIENT}; color: {BG}; border: 1px solid {CLIENT};
+    border-radius: 3px; padding: 1px 6px; font-size: 9px;
+    font-weight: 700; letter-spacing: 0.6px;
+}}
 #roleChip {{
     background: {SURFACE_HI}; color: {TEXT_FAINT}; border: 1px solid {BORDER};
     border-radius: 3px; padding: 1px 6px; font-size: 9px;
@@ -264,8 +287,22 @@ QComboBox QAbstractItemView {{
     background: {SURFACE_HI}; border: 1px solid {BORDER};
     border-radius: {RADIUS}px;
 }}
-#chatMine QLabel, #chatTheirs QLabel {{ background: transparent; }}
+#chatClient {{
+    background: {CLIENT_SUNK}; border: 1px solid {CLIENT};
+    border-radius: {RADIUS}px;
+}}
+#chatMine QLabel, #chatTheirs QLabel, #chatClient QLabel {{
+    background: transparent;
+}}
 #chatMeta {{ color: {TEXT_FAINT}; font-size: 10px; }}
+#scopeChip {{
+    background: {SURFACE_SUNK}; color: {WARN}; border: 1px solid {BORDER};
+    border-radius: 3px; padding: 1px 6px; font-size: 10px;
+}}
+#dayDivider {{
+    color: {TEXT_FAINT}; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.6px; padding: 6px 0 2px 0;
+}}
 #chatBody {{ color: {TEXT}; font-size: 12px; }}
 
 /* ---- preflight ---- */
@@ -283,7 +320,7 @@ QComboBox QAbstractItemView {{
     border-radius: {RADIUS}px;
 }}
 #dropZoneActive {{
-    background: rgba(61,157,255,0.10); border: 1px dashed {ACCENT};
+    background: {ACCENT_GLOW}; border: 1px dashed {ACCENT};
     border-radius: {RADIUS}px;
 }}
 #dropHint {{ color: {TEXT_FAINT}; font-size: 12px; }}
@@ -305,15 +342,16 @@ QMenu::separator {{ height: 1px; background: {BORDER}; margin: 5px 8px; }}
 
 /* ---- scrollbars ---- */
 QScrollArea {{ border: none; background: transparent; }}
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 0; }}
 QScrollBar::handle:vertical {{
-    background: {BORDER_HI}; border-radius: 5px; min-height: 30px;
+    background: {BORDER_HI}; border-radius: 4px; min-height: 30px;
 }}
-QScrollBar::handle:vertical:hover {{ background: {TEXT_FAINT}; }}
-QScrollBar:horizontal {{ background: transparent; height: 10px; }}
+QScrollBar::handle:vertical:hover {{ background: {ACCENT_SUNK}; }}
+QScrollBar:horizontal {{ background: transparent; height: 8px; }}
 QScrollBar::handle:horizontal {{
-    background: {BORDER_HI}; border-radius: 5px; min-width: 30px;
+    background: {BORDER_HI}; border-radius: 4px; min-width: 30px;
 }}
+QScrollBar::handle:horizontal:hover {{ background: {ACCENT_SUNK}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 

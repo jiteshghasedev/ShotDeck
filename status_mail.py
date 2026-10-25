@@ -1,18 +1,18 @@
-"""Mail the people who act next when an artist changes a task's status.
+"""Mail production when an artist changes a task's status in Flow.
 
 Set in Flow to                        mails
-config.REVIEW_MAIL_STATUS ("prw")     the task's leads: the emails in its
-                                      lead field (sg_lead_reviewer)
 config.PRODUCTION_MAIL_STATUSES       production: config.PRODUCTION_MAIL
   ("cmpt", "pkg")
+
+config.REVIEW_MAIL_STATUS ("prw") also asks the artist for a note, but the
+mail to the leads -- and the approved / needs-changes mail back to the
+artist -- comes from the SG daemon's sg_task_status_mail plugin
+(vfx-ingest-pipeline), so a status set on the ShotGrid site mails too.
 
 The mail carries the task and the artist's note. The SMTP side is the
 pipeline's own services.mailer.send_email, imported from PIPELINE_ROOT the
 way the ingest API does it, so there is one mailer and one set of SMTP_*
 settings for the studio.
-
-Only changes made in Flow send mail. A status set on the ShotGrid site does
-not; that needs the event daemon.
 
 FLOW_MAIL_OFF=1 turns it off; FLOW_MAIL_REDIRECT=<addr> sends every mail to
 that one address instead, for testing.
@@ -20,7 +20,6 @@ that one address instead, for testing.
 
 import html
 import os
-import re
 import smtplib  # noqa: F401 -- the frozen app must bundle it for the mailer
 import sys
 
@@ -31,13 +30,9 @@ log = applog.get()
 
 
 def wants_mail(code):
+    """Whether Flow asks the artist for a note when setting this status."""
     return code == config.REVIEW_MAIL_STATUS or \
         code in config.PRODUCTION_MAIL_STATUSES
-
-
-def recipients(value):
-    """The addresses in a lead field: "a@x, b@x" -> ["a@x", "b@x"]."""
-    return [a.strip() for a in re.split(r"[,;]", value or "") if "@" in a]
 
 
 def message(task, artist, email, note, old, new):
@@ -46,8 +41,7 @@ def message(task, artist, email, note, old, new):
     name = task.get("content") or ""
     project = (task.get("project") or {}).get("name") or ""
     step = (task.get("step") or {}).get("name") or ""
-    what = "ready for review" if new == config.REVIEW_MAIL_STATUS \
-        else f"set to {new}"
+    what = f"set to {new}"
     subject = f"[{project}] {entity} {name} {what} - {artist}"
     rows = [("Project", project), ("Shot / Asset", entity), ("Task", name),
             ("Step", step), ("Status", f"{old or '-'} -> {new}"),
@@ -66,11 +60,6 @@ def message(task, artist, email, note, old, new):
 
 
 def _to(sg, task, new):
-    if new == config.REVIEW_MAIL_STATUS:
-        row = sg.find_one("Task", [["id", "is", task["id"]]],
-                          [config.TASK_LEAD_FIELD]) or {}
-        return recipients(row.get(config.TASK_LEAD_FIELD)), \
-            config.TASK_LEAD_FIELD
     if new in config.PRODUCTION_MAIL_STATUSES:
         return list(config.PRODUCTION_MAIL), "FLOW_PRODUCTION_MAIL"
     return [], ""
@@ -94,6 +83,24 @@ def send(sg, task, artist, email, note, old, new):
     _send_email()(to, subject, body)
     log.info("%s mail for task %s sent to %s", new, task["id"], to)
     return to
+
+
+def after_change(sg, task, artist, email, note, old, new):
+    """Mail whoever acts next, once the status is saved. Flow desktop and the
+    web app (FLOW_PROXY) both call this, so a change mails the same people
+    wherever it was made.
+
+    Never raises: a failed mail must not undo a saved status. Returns a line
+    for the user.
+    """
+    if new == config.REVIEW_MAIL_STATUS:
+        return "the leads are mailed by ShotGrid"
+    try:
+        to = send(sg, task, artist, email, note, old, new)
+    except Exception as e:
+        log.warning("%s mail for task %s failed: %s", new, task["id"], e)
+        return f"mail failed: {e}"
+    return f"mailed {', '.join(to)}" if to else "nobody to mail"
 
 
 def _send_email():

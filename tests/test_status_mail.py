@@ -1,4 +1,4 @@
-"""Status changes mail the leads (prw) or production (cmpt, pkg)."""
+"""Status changes in Flow mail production (cmpt, pkg); prw is the daemon's."""
 
 import os
 
@@ -12,7 +12,7 @@ TASK = {"type": "Task", "id": 77, "content": "Comp",
         "step": {"type": "Step", "id": 3, "name": "Comp"}}
 
 
-def _send(leads, note="Edge fixed, please check", new="prw"):
+def _send(leads, note="Edge fixed, please check", new="cmpt"):
     sg = fakes.FakeShotgun()
     sg.tasks.append(dict(TASK, **{config.TASK_LEAD_FIELD: leads}))
     sent = []
@@ -26,21 +26,24 @@ def _send(leads, note="Edge fixed, please check", new="prw"):
     return to, sent
 
 
-def test_the_leads_get_the_task_and_the_note():
-    to, sent = _send("rahul@5and8.ai, priya@5and8.ai")
-    assert to == ["rahul@5and8.ai", "priya@5and8.ai"]
+def setup_module():
+    config.PRODUCTION_MAIL = ["production@5and8.ai"]
+
+
+def test_production_gets_the_task_and_the_note():
+    to, sent = _send("rahul@5and8.ai")
+    assert to == ["production@5and8.ai"]
     (addrs, subject, body), = sent
     assert addrs == to
-    assert subject == "[UAT6] AD1030 Comp ready for review - Jitesh"
+    assert subject == "[UAT6] AD1030 Comp set to cmpt - Jitesh"
     assert "Edge fixed, please check" in body
-    assert "ip -&gt; prw" in body
+    assert "ip -&gt; cmpt" in body
     assert config.entity_url("Task", 77) in body
 
 
-def test_no_leads_means_no_mail():
-    assert _send("") == ([], [])
-    assert status_mail.recipients("rahul, priya@5and8.ai;") == \
-        ["priya@5and8.ai"], "names without an address are not mailable"
+def test_review_asks_for_a_note_but_the_daemon_mails_the_leads():
+    assert status_mail.wants_mail("prw")
+    assert _send("rahul@5and8.ai", new="prw") == ([], [])
 
 
 def test_complete_and_package_mail_production_not_the_leads():

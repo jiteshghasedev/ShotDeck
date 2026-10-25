@@ -1,7 +1,9 @@
 import getpass
 
-from PySide6.QtCore import Qt, QThreadPool
-from PySide6.QtGui import QKeySequence, QShortcut
+import datetime
+
+from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QMenu, QPushButton, QStackedWidget, QMessageBox, QSplitter, QInputDialog,
@@ -35,6 +37,11 @@ def is_production(login):
     return login in config.PRODUCTION_USERS
 
 
+def _duration(seconds):
+    """120 -> "2 min", 45 -> "45s": for a retry the artist is waiting on."""
+    return f"{seconds // 60} min" if seconds >= 60 else f"{seconds}s"
+
+
 class MainWindow(QMainWindow):
     def __init__(self, sg, login=None, auth_result=None, production=None):
         super().__init__()
@@ -57,6 +64,12 @@ class MainWindow(QMainWindow):
         self.task = None          # Task an app will be launched against
         self.pool = QThreadPool.globalInstance()
         self._jobs = set()        # in-flight workers, see _run()
+        self._event_id = None     # newest ShotGrid event seen, for live sync
+        self._syncing = False
+        self._sync_failures = 0   # in a row; spaces the retries out
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(max(config.SYNC_SECONDS, 1) * 1000)
+        self._sync_timer.timeout.connect(self._poll_sync)
 
         self.setWindowTitle(config.APP_TITLE)
         self.resize(1080, 720)
@@ -131,6 +144,17 @@ class MainWindow(QMainWindow):
         self.deliver_btn.hide()
         h.addWidget(self.deliver_btn)
 
+        self.dashboard_btn = QPushButton("Dashboard ↗")
+        self.dashboard_btn.setObjectName("termBtn")
+        self.dashboard_btn.setCursor(Qt.PointingHandCursor)
+        self.dashboard_btn.setToolTip(
+            "Open the ingestion and packaging dashboard in the browser")
+        self.dashboard_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(config.DASHBOARD_URL)))
+        self.dashboard_btn.setVisible(
+            self.production and bool(config.DASHBOARD_URL))
+        h.addWidget(self.dashboard_btn)
+
         self.term_btn = QPushButton("Terminal")
         self.term_btn.setObjectName("termBtn")
         self.term_btn.setCheckable(True)
@@ -204,6 +228,14 @@ class MainWindow(QMainWindow):
         self.review_page.compare_requested.connect(self.compare_review_item)
         self.review_page.count_changed.connect(self._on_review_count)
 
+        # Shown only while live sync cannot reach ShotGrid: the task list is
+        # then as old as the last good poll, and the artist should know it.
+        self.offline_btn = QPushButton("")
+        self.offline_btn.setObjectName("consoleBtn")
+        self.offline_btn.setCursor(Qt.PointingHandCursor)
+        self.offline_btn.clicked.connect(self._poll_sync)
+        self.offline_btn.hide()
+        self.statusBar().addPermanentWidget(self.offline_btn)
         self.statusBar().showMessage("Connecting to ShotGrid...")
         self._run(self._bootstrap, self._on_bootstrap)
 
@@ -324,15 +356,8 @@ class MainWindow(QMainWindow):
                 f"{newer.get('code') or 'This version'} is the first version "
                 f"on its task — there is nothing before it to compare with.")
             return
-        # Both playable: RV's own wipe, at full resolution and in the project's
-        # colour space. The dialog is the fallback for media RV cannot reach.
-        if rv_player.playable(newer) and rv_player.playable(older):
-            try:
-                rv_player.open_versions([newer, older], mode="wipe",
-                                        project=self.project)
-                return
-            except Exception as e:
-                log.error("could not open RV: %s", e)
+        # Flow's own player, wiping the two with the notes beside them. RV is
+        # a button inside it for a frame-accurate sign-off.
         VersionCompare(self.sg, self.project, newer, older, parent=self).exec()
 
     def open_latest_version(self, task, version):
@@ -403,6 +428,81 @@ class MainWindow(QMainWindow):
         self.project_page.set_projects(projects)
         self.home_tasks.set_projects(projects)
         self._load_open_tasks()
+        if config.SYNC_SECONDS > 0:
+            self._poll_sync()                 # takes the starting event id
+            self._sync_timer.start()
+
+    # -- live sync -----------------------------------------------------------
+
+    def _poll_sync(self):
+        # One query at a time, and none while nobody can see the window.
+        if self._syncing or self.isMinimized():
+            return
+        self._syncing = True
+
+        def failed(message):
+            self._syncing = False
+            self._sync_failures += 1
+            # Further apart each time, up to five minutes: a dropped network
+            # is not helped by being asked every minute.
+            delay = min(max(config.SYNC_SECONDS, 1) * 2 ** self._sync_failures,
+                        300)
+            self._sync_timer.setInterval(delay * 1000)
+            log.warning("live sync skipped: %s (next try in %ss)",
+                        message, delay)
+            self.offline_btn.setText(
+                f"⚠ Live sync paused — retrying in {_duration(delay)} · "
+                f"Retry now")
+            self.offline_btn.setToolTip(
+                f"ShotGrid did not answer: {message}\n\nThe task list is as "
+                f"of the last successful sync.")
+            self.offline_btn.show()
+
+        self._run(self.sg.task_events_since, self._on_sync, self._event_id,
+                  on_error=failed)
+
+    def _on_sync(self, result):
+        self._syncing = False
+        if self._sync_failures:
+            self._sync_failures = 0
+            self._sync_timer.setInterval(max(config.SYNC_SECONDS, 1) * 1000)
+            self.offline_btn.hide()
+            # Nothing was missed: the events since the last id seen are in
+            # this very result.
+            self.statusBar().showMessage("Back online — ShotGrid synced", 10000)
+        starting = self._event_id is None
+        self._event_id, events = result
+        if starting or not self._sync_relevant(events):
+            return
+        self._load_open_tasks()
+        self.statusBar().showMessage(
+            "ShotGrid changes synced "
+            + datetime.datetime.now().strftime("%H:%M"), 10000)
+
+    def _sync_relevant(self, events):
+        """Whether any event could change the home list as it stands."""
+        if self.home_tasks.scope == EVERYONE:
+            return bool(events)
+        shown = {t["id"] for t in self.home_tasks._tasks}
+        me = (self.sg.owner_value or "").lower()
+        owner = self.sg.owner or {}
+        for e in events:
+            if (e.get("entity") or {}).get("id") in shown:
+                return True
+            # A task newly given to this user, or to them to review. ShotGrid
+            # logs the fields set on a new task as changes too.
+            attr, meta = e.get("attribute_name"), e.get("meta") or {}
+            if me and attr == config.TASK_OWNER_FIELD and \
+                    me in str(meta.get("new_value") or "").lower():
+                return True
+            # task_reviewers is a multi-entity field: its events list the
+            # links added rather than a new value.
+            if owner and attr == config.TASK_LEAD_FIELD and any(
+                    (a or {}).get("type") == owner.get("type")
+                    and (a or {}).get("id") == owner.get("id")
+                    for a in meta.get("added") or []):
+                return True
+        return False
 
     def _load_open_tasks(self):
         """The home page's task list: every unfinished task, all projects."""
@@ -414,7 +514,7 @@ class MainWindow(QMainWindow):
                   and self._on_open_tasks(tasks),
                   on_error=lambda m: (
                       log.warning("could not load open tasks: %s", m),
-                      self.home_tasks.set_tasks([])))
+                      self.home_tasks.set_tasks([], failed=True)))
 
     def _on_open_tasks(self, tasks):
         self.home_tasks.set_tasks(tasks)
@@ -431,11 +531,11 @@ class MainWindow(QMainWindow):
 
     def _load_task_notes(self):
         """The Notes column: count and newest date, one pass for the list."""
-        ids = [t["id"] for t in self.home_tasks._tasks]
-        if not ids:
+        tasks = list(self.home_tasks._tasks)
+        if not tasks:
             return
         self._run(notes_service.NotesService(self.sg).task_summary,
-                  self.home_tasks.set_notes, ids,
+                  self.home_tasks.set_notes, tasks,
                   on_error=lambda m: log.warning(
                       "could not read task notes: %s", m))
 
@@ -631,6 +731,10 @@ class MainWindow(QMainWindow):
         self.home_tasks.update_task(task_id, code)
 
         def write():
+            # The note goes first: the SG daemon mails the leads on the
+            # status change and attaches the task's newest note.
+            if note:
+                self._post_status_note(task, note, code)
             self.sg.set_task_status(task_id, code)
             mailed = self._mail_status_change(task, note, old, code) \
                 if mails else ""
@@ -663,25 +767,21 @@ class MainWindow(QMainWindow):
             f"Note for {who} on '{task.get('content', '')}':")
         return text.strip() if ok else None
 
-    def _mail_status_change(self, task, note, old, code):
-        """Post the note on the task and mail whoever acts next. On the
-        worker, after the status is saved: a failure here is reported, never
-        undoes it."""
-        if note:
-            try:
-                self.sg.create_note(task["project"], None, note,
-                                    f"Set to {code}", task)
-            except Exception as e:
-                log.warning("status note on task %s failed: %s",
-                            task["id"], e)
+    def _post_status_note(self, task, note, code):
+        """The artist's note on the task. A failure is logged, never stops
+        the status change."""
         try:
-            to = status_mail.send(
-                self.sg.sg, task, notes_service.signer_name(self.login),
-                self.email, note, old, code)
+            self.sg.create_note(task["project"], None, note,
+                                f"Set to {code}", task)
         except Exception as e:
-            log.warning("%s mail for task %s failed: %s", code, task["id"], e)
-            return f"mail failed: {e}"
-        return f"mailed {', '.join(to)}" if to else "nobody to mail"
+            log.warning("status note on task %s failed: %s", task["id"], e)
+
+    def _mail_status_change(self, task, note, old, code):
+        """Mail whoever acts next. On the worker, after the status is saved:
+        a failure here is reported, never undoes it."""
+        return status_mail.after_change(
+            self.sg.sg, task, notes_service.signer_name(self.login),
+            self.email, note, old, code)
 
     def open_folder(self, path):
         try:

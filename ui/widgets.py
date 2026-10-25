@@ -4,7 +4,7 @@ import urllib.request
 import shiboken6
 
 from PySide6.QtCore import (
-    Qt, QSize, Signal, QThreadPool, QRunnable, QObject, QRectF,
+    Qt, QSize, Signal, QThreadPool, QRunnable, QObject, QRectF, QTimer,
 )
 from PySide6.QtGui import (
     QPixmap, QPainter, QColor, QLinearGradient, QBrush, QFont, QPainterPath,
@@ -87,6 +87,21 @@ def load_thumbnail(url, callback):
 
     job.signals.done.connect(done)
     _pool.start(job)
+
+
+def flash_refreshed(button, seconds=6):
+    """Say on a refresh button that the reload landed, then put it back.
+
+    Shown even when nothing changed, so the click visibly did something.
+    """
+    if not hasattr(button, "_resting_text"):
+        button._resting_text = button.text()
+        button._flash = QTimer(button)
+        button._flash.setSingleShot(True)
+        button._flash.timeout.connect(
+            lambda: button.setText(button._resting_text))
+    button.setText("✓ Refreshed " + datetime.datetime.now().strftime("%H:%M"))
+    button._flash.start(seconds * 1000)
 
 
 def rounded(pixmap, size, radius):

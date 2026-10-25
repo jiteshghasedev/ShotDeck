@@ -9,6 +9,8 @@ env:
 software:
   nuke:
     NUKE_PATH: /mnt/pipeline/nuke:{PROJECT_ROOT}/pipeline/nuke
+    # Per-user: a shared /tmp/nuke_cache is owned by whoever ran Nuke first.
+    NUKE_DISK_CACHE: /tmp/nuke_cache_{USER}
   maya:
     MAYA_MODULE_PATH: /mnt/pipeline/maya/modules
     MAYA_SCRIPT_PATH+: "{PROJECT_ROOT}/pipeline/maya/scripts"

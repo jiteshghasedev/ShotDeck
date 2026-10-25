@@ -28,9 +28,8 @@ TASK_OWNER_MATCH_FIELD = "email"   # for CustomEntity use e.g. "sg_email"
 # that Task.sg_assigned_to actually stores. Set to "email" if tasks store
 # addresses, "name" if they store "Firstname Lastname", "login" for logins.
 TASK_OWNER_STRING_FIELD = "email"
-# Comparison operator for the string filter. Use "contains" if one task can
-# list several people in the same string.
-TASK_OWNER_STRING_OP = "is"
+# One task can name several people, separated by commas or semicolons
+# ("a@5and8.ai, b@5and8.ai"); it is then on each of their lists.
 
 # Email domain used to derive the current user's address from their OS login
 # (jitesh -> jitesh@5and8.ai). Override the whole address with SGDESK_USER_EMAIL
@@ -48,6 +47,8 @@ TASK_FIELDS = [
     # Deep fields, needed to build the folder path without a second query.
     "entity.Shot.sg_sequence",
     "entity.Asset.sg_asset_type",
+    # The shot's or asset's thumbnail, beside the task on the home page.
+    "entity.Shot.image", "entity.Asset.image",
 ]
 
 # Task statuses that mean the work is finished. The home page lists every
@@ -110,6 +111,39 @@ SOFTWARE_FIELDS = [
 ]
 
 PROJECT_FIELDS = ["name", "sg_status", "image", "sg_description", "tank_name"]
+
+# -- web Projects page (FLOW_PROXY) -------------------------------------------
+#
+# Columns the web Projects page asks for. A wish list, not a promise: it is
+# intersected with the site's own Project schema first, so a field this site
+# does not have drops out instead of failing the whole find(). Add custom
+# fields here once FLOW_PROXY's /api/projects/meta shows they exist.
+PROJECT_LIST_FIELDS = [
+    "name", "tank_name", "sg_status", "sg_type", "sg_description",
+    "sg_client", "sg_producer", "sg_project_manager", "sg_coordinator",
+    "start_date", "end_date", "sg_start_date", "sg_due_date",
+    "sg_delivery_date", "sg_priority", "image", "created_at", "updated_at",
+]
+# The only Project fields the web page may write. sg_status is deliberately
+# absent: it decides which projects Flow lists, so one slip hides a show from
+# every artist.
+PROJECT_EDITABLE_FIELDS = ["sg_description"]
+# Task fields the web Tasks page shows on top of TASK_FIELDS, if the site's
+# Task schema has them. Same wish-list rule as PROJECT_LIST_FIELDS.
+TASK_LIST_EXTRA_FIELDS = ["sg_priority_1", "sg_description", "updated_at"]
+# The only Task fields the web page may write.
+TASK_EDITABLE_FIELDS = ["sg_status_list", "start_date", "due_date",
+                        TASK_OWNER_FIELD]
+# Version fields the web review page reads, if the site has them. The mp4 and
+# webm transcodes are what a browser can play; the original upload is often a
+# .mov it cannot. All are presigned links that expire.
+VERSION_WEB_MEDIA_FIELDS = [
+    "sg_uploaded_movie_mp4", "sg_uploaded_movie_webm", "sg_uploaded_movie",
+    "filmstrip_image", "sg_uploaded_movie_transcoding_status",
+    "uploaded_movie_duration", "sg_uploaded_movie_frame_rate",
+]
+# The only Version field the web page may write: the review status.
+VERSION_EDITABLE_FIELDS = ["sg_status_list"]
 
 # Field on Software holding the rez request, e.g. "maya-2024 keentools-6.2".
 SOFTWARE_REZ_FIELD = "sg_rez_packages"
@@ -195,10 +229,10 @@ NOTES_MIN_REFRESH_SECONDS = 5
 
 # -- production view -------------------------------------------------------
 #
-# Leads and reviewers: a String field on Task holding the people who review
-# it, in the same form as TASK_OWNER_FIELD (several separated by commas).
-# Their "To Review" list is the tasks that name them here.
-TASK_LEAD_FIELD = os.environ.get("FLOW_TASK_LEAD_FIELD", "sg_lead_reviewer")
+# Leads and reviewers: ShotGrid's own Task.task_reviewers, a multi-entity
+# field of HumanUsers (and Groups). Their "To Review" list is the tasks that
+# name them there.
+TASK_LEAD_FIELD = os.environ.get("FLOW_TASK_LEAD_FIELD", "task_reviewers")
 # Setting a task to this status in Flow asks the artist for a note and mails
 # the task's leads (status_mail.py), through the pipeline's mailer.
 REVIEW_MAIL_STATUS = os.environ.get("FLOW_REVIEW_MAIL_STATUS", "prw")
@@ -212,6 +246,9 @@ PRODUCTION_USERS = [
     s.strip() for s in os.environ.get("FLOW_PRODUCTION_USERS", "").split(",")
     if s.strip()
 ]
+# The ingestion / packaging dashboard. Production get a header button that
+# opens it in the browser; the dashboard does its own login. Unset hides it.
+DASHBOARD_URL = os.environ.get("FLOW_DASHBOARD_URL", "")
 # Setting a task to one of these in Flow mails production (status_mail.py):
 # the FLOW_PRODUCTION_MAIL addresses, or else the production logins above at
 # the studio's mail domain.
@@ -223,6 +260,11 @@ PRODUCTION_MAIL = [
     s.strip() for s in os.environ.get("FLOW_PRODUCTION_MAIL", "").split(",")
     if s.strip()
 ] or [f"{login}@{USER_EMAIL_DOMAIN}" for login in PRODUCTION_USERS]
+
+# Live sync: every this many seconds Flow asks ShotGrid for task events newer
+# than the last one it saw -- one small EventLogEntry query -- and reloads the
+# home task list only when one touches it. 0 turns it off.
+SYNC_SECONDS = int(os.environ.get("FLOW_SYNC_SECONDS", "60") or 0)
 
 # -- the review inbox ------------------------------------------------------
 
@@ -247,6 +289,26 @@ REVIEW_STATUS_TYPES = {
 REVIEW_READ_STATE_PATH = os.environ.get(
     "FLOW_REVIEW_STATE",
     os.path.expanduser("~/.flow/review_read.json"))
+
+# Local copies of the movies uploaded to ShotGrid, so the review player plays
+# from disk instead of streaming (media_cache.py). Per user and per machine:
+# %LOCALAPPDATA%\Flow\media_cache on Windows, $XDG_CACHE_HOME/flow/media
+# (~/.cache/flow/media) on Linux. Point FLOW_MEDIA_CACHE at a local disk
+# where home directories live on NFS. The least recently played copies go
+# first once the cache passes FLOW_MEDIA_CACHE_GB.
+def _default_media_cache():
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or             os.path.expanduser("~/AppData/Local")
+        return os.path.join(base, "Flow", "media_cache")
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "flow", "media")
+
+
+MEDIA_CACHE_DIR = os.environ.get("FLOW_MEDIA_CACHE") or _default_media_cache()
+MEDIA_CACHE_GB = float(os.environ.get("FLOW_MEDIA_CACHE_GB", "20"))
+# How many of the review inbox's versions are downloaded in the background
+# when it loads, newest first, so the first open plays from disk. 0 is off.
+REVIEW_PREFETCH = int(os.environ.get("FLOW_REVIEW_PREFETCH", "10") or 0)
 
 # Per-user UI choices: the app each task was last launched in, whether the
 # home page's projects section is folded. See ui/ui_state.py.

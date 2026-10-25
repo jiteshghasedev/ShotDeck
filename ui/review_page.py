@@ -14,9 +14,11 @@ from PySide6.QtWidgets import (
 )
 
 import applog
+import config
+import media_cache
 import review_service
 from . import jobs, theme
-from .widgets import EmptyState
+from .widgets import EmptyState, flash_refreshed
 
 log = applog.get()
 
@@ -118,6 +120,7 @@ class ReviewPage(QWidget):
         self.project = None
         self._jobs = set()
         self._request = 0
+        self._prefetching = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 16, 24, 16)
@@ -141,7 +144,7 @@ class ReviewPage(QWidget):
         self.refresh_btn = QPushButton("↻ Refresh")
         self.refresh_btn.setObjectName("termBtn")
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.clicked.connect(self.refresh)
+        self.refresh_btn.clicked.connect(lambda: self.refresh(clicked=True))
         head.addWidget(self.refresh_btn)
         lay.addLayout(head)
 
@@ -173,7 +176,7 @@ class ReviewPage(QWidget):
         """Scope to one project, or None for everything the artist has."""
         self.project = project
 
-    def refresh(self):
+    def refresh(self, clicked=False):
         self._request += 1
         request = self._request
         project = self.project
@@ -188,6 +191,9 @@ class ReviewPage(QWidget):
             self.items = items
             self.service.read_state.prune(items)
             self._render()
+            self._prefetch(items)
+            if clicked:
+                flash_refreshed(self.refresh_btn)
 
         def failed(message):
             if request != self._request:
@@ -228,6 +234,34 @@ class ReviewPage(QWidget):
         self.stack.setCurrentWidget(self.scroll)
 
     # -- actions -----------------------------------------------------------
+
+    def _prefetch(self, items):
+        """Download the inbox's movies now, so opening one plays from disk.
+
+        One run at a time: a refresh while one is going adds nothing it would
+        not already fetch next time.
+        """
+        if self._prefetching or config.REVIEW_PREFETCH <= 0:
+            return
+        # Newest first, each version once, however many items point at it.
+        versions = list({i.version["id"]: i.version for i in items
+                         if (i.version or {}).get("id")}.values())
+        if not versions:
+            return
+        self._prefetching = True
+
+        def finished(count):
+            self._prefetching = False
+            if count:
+                log.info("review inbox: %s movie%s cached ahead", count,
+                         "" if count == 1 else "s")
+
+        def failed(message):
+            self._prefetching = False
+            log.info("review inbox prefetch stopped: %s", message)
+
+        jobs.run(self._jobs, media_cache.prefetch, finished, versions,
+                 config.REVIEW_PREFETCH, on_error=failed)
 
     def _open(self, item):
         self.service.mark_read(item)

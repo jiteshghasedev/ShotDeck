@@ -39,6 +39,49 @@ CLIENT = {"type": "HumanUser", "id": 44, "name": "Sam",
                                   "name": "Client"}}
 
 
+def _schema_field(label, data_type, valid_values=None):
+    props = {"valid_values": {"value": valid_values}} if valid_values else {}
+    return {"name": {"value": label}, "data_type": {"value": data_type},
+            "editable": {"value": True}, "properties": props}
+
+
+# What schema_field_read("Project") answers: a site with some stock fields and
+# none of the custom ones, so the wish-list intersection has something to drop.
+PROJECT_SCHEMA = {
+    "name": _schema_field("Project Name", "text"),
+    "tank_name": _schema_field("Tank Name", "text"),
+    "sg_status": _schema_field("Status", "list", ["Active", "Bidding", "Lost"]),
+    "sg_description": _schema_field("Description", "text"),
+    "start_date": _schema_field("Start Date", "date"),
+    "image": _schema_field("Thumbnail", "image"),
+    "updated_at": _schema_field("Date Updated", "date_time"),
+    "is_template": _schema_field("Template", "checkbox"),
+}
+
+
+TASK_SCHEMA = {
+    "content": _schema_field("Task Name", "text"),
+    "sg_status_list": _schema_field("Status", "status_list",
+                                    ["wtg", "ip", "prw", "cmpt", "fin"]),
+    "start_date": _schema_field("Start Date", "date"),
+    "due_date": _schema_field("Due Date", "date"),
+    "sg_assigned_to": _schema_field("Assigned To", "text"),
+    "updated_at": _schema_field("Date Updated", "date_time"),
+}
+
+
+VERSION_SCHEMA = {
+    "code": _schema_field("Version Name", "text"),
+    "sg_status_list": _schema_field("Status", "status_list", ["rev", "vwd", "apr", "na"]),
+    "image": _schema_field("Thumbnail", "image"),
+    "filmstrip_image": _schema_field("Filmstrip", "image"),
+    "sg_uploaded_movie": _schema_field("Uploaded Movie", "url"),
+    "sg_uploaded_movie_mp4": _schema_field("Movie MP4", "url"),
+    "project": _schema_field("Project", "entity"),
+    "updated_at": _schema_field("Date Updated", "date_time"),
+}
+
+
 class FakeShotgun:
     """Enough of shotgun_api3.Shotgun to publish and to browse."""
 
@@ -142,9 +185,21 @@ class FakeShotgun:
         if entity_type == "Project":
             # The status/template filters are the site's business; the fake
             # only ever holds projects a test put there.
-            return list(self.projects)
+            ids = [f[2] for f in filters
+                   if not isinstance(f, dict) and f[:2] == ["id", "is"]]
+            # copies, as ShotGrid returns a fresh row on every read
+            return [dict(p) for p in self.projects if not ids or p["id"] in ids]
         if entity_type == "Task":
-            return [t for t in self.tasks if _matches(t, filters)]
+            # copies, as ShotGrid returns a fresh row on every read
+            rows = [dict(t) for t in self.tasks if _matches(t, filters)]
+            if order:
+                key = order[0]["field_name"]
+                rows.sort(key=lambda t: str(_deep_get(t, key) or ""),
+                          reverse=order[0]["direction"] == "desc")
+            if limit:
+                start = (page - 1) * limit
+                rows = rows[start:start + limit]
+            return rows
         if entity_type == "Step":
             return [{"type": "Step", "id": 9, "code": "Comp",
                      "entity_type": "Shot"},
@@ -182,6 +237,13 @@ class FakeShotgun:
         for row in self.versions + self.notes + self.replies:
             if row["id"] == entity_id and row["type"] == entity_type:
                 row.update(data)
+                if entity_type == "Version":
+                    row["updated_at"] = datetime.datetime.now()
+        if entity_type in ("Project", "Task"):
+            for row in self.projects if entity_type == "Project" else self.tasks:
+                if row["id"] == entity_id:
+                    # ShotGrid stamps every write; the conflict check reads it
+                    row.update(data, updated_at=datetime.datetime.now())
         return {"type": entity_type, "id": entity_id, **data}
 
     def delete(self, entity_type, entity_id):
@@ -205,8 +267,29 @@ class FakeShotgun:
         self.calls.append(("upload_thumbnail", entity_type, entity_id, path))
         return 556
 
-    def schema_field_read(self, entity_type, field):
+    def summarize(self, entity_type, filters, summary_fields, grouping=None):
+        """Counts only, which is all the client asks ShotGrid to add up."""
+        self.calls.append(("summarize", entity_type, filters, grouping))
+        if self.fail_find:
+            raise self.fail_find
+        rows = [t for t in self.tasks if _matches(t, filters)] \
+            if entity_type == "Task" else []
+        out = {"summaries": {"id": len(rows)}}
+        if grouping:
+            field, groups = grouping[0]["field"], {}
+            for row in rows:
+                value = row.get(field)
+                groups[value] = groups.get(value, 0) + 1
+            out["groups"] = [{"group_name": v, "group_value": v,
+                              "summaries": {"id": n}}
+                             for v, n in groups.items()]
+        return out
+
+    def schema_field_read(self, entity_type, field=None):
         self.calls.append(("schema_field_read", entity_type, field))
+        if field is None:
+            return dict({"Project": PROJECT_SCHEMA, "Task": TASK_SCHEMA,
+                         "Version": VERSION_SCHEMA}.get(entity_type, {}))
         return {field: {"properties": {
             "valid_values": {"value": ["wip", "rev", "apr"]},
             "display_values": {"value": {"wip": "Work In Progress",
@@ -259,6 +342,11 @@ def _matches(version, filters):
                 return False
         elif op == "starts_with":
             if not str(actual or "").lower().startswith(str(value).lower()):
+                return False
+        elif op in ("less_than", "greater_than"):
+            # dates are "YYYY-MM-DD" strings, so they compare as text
+            if actual is None or not (actual < value if op == "less_than"
+                                      else actual > value):
                 return False
         elif op in ("in_last", "in_calendar_day", "between"):
             continue          # dates are the server's business, not the fake's

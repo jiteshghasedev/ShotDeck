@@ -24,6 +24,8 @@ os.environ.setdefault("SG_SCRIPT_KEY", "test-key-not-real")
 os.environ.setdefault("FLOW_LOG_DIR",
                       os.path.join(HERE, "_logs"))
 # Never read or write the developer's own ~/.flow state from a test run.
+os.environ.setdefault("FLOW_MEDIA_CACHE",
+                      os.path.join(HERE, "_logs", "media_cache"))
 os.environ.setdefault("FLOW_UI_STATE",
                       os.path.join(HERE, "_logs", "ui_state.json"))
 
@@ -37,6 +39,7 @@ if "shotgun_api3" not in sys.modules:
 
 MODULES = [
     "test_media_inspector",
+    "test_media_cache",
     "test_path_validator",
     "test_version_query",
     "test_preflight",
@@ -46,10 +49,13 @@ MODULES = [
     "test_latest_version",
     "test_review_service",
     "test_sg_client",
+    "test_projects",
+    "test_web_tasks",
     "test_auth",
     "test_dcc",
     "test_usd",
     "test_launch_env",
+    "test_plates",
     "test_rv_review", "test_status_mail",
     "test_ui",
 ]

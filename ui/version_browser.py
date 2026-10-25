@@ -735,12 +735,15 @@ class VersionBrowser(QDialog):
     def _compare(self, version_a, version_b):
         if not version_a or not version_b:
             return
-        # RV's wipe is the compare a supervisor signs off on; the dialog stays
-        # the fallback for versions whose media this machine cannot read.
-        if rv_player.playable(version_a) and rv_player.playable(version_b):
-            self._open_in_rv([version_a, version_b], mode="wipe")
-            return
+        # Flow's own player plays and wipes both, with the notes beside them;
+        # it has its own Open in RV for a frame-accurate sign-off.
+        self._stop_player()
         VersionCompare(self.sg, self.project, version_a, version_b,
+                       versions=self._versions, parent=self).exec()
+
+    def _play_in_flow(self, version):
+        self._stop_player()
+        VersionCompare(self.sg, self.project, version, None,
                        versions=self._versions, parent=self).exec()
 
     def _pick_compare(self, version):
@@ -767,6 +770,11 @@ class VersionBrowser(QDialog):
         open_act = QAction("Open in ShotGrid", menu)
         open_act.triggered.connect(self._open_in_shotgrid)
         menu.addAction(open_act)
+
+        play_act = QAction("Play…", menu)
+        play_act.triggered.connect(
+            lambda _=False, v=version: self._play_in_flow(v))
+        menu.addAction(play_act)
 
         rv_act = QAction("Open in RV", menu)
         rv_act.setEnabled(rv_player.playable(version))

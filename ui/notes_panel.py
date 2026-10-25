@@ -40,8 +40,9 @@ class MessageCard(QFrame):
     def __init__(self, message, can_modify, parent=None):
         super().__init__(parent)
         self.message = message
-        self.setObjectName("noteCard" if message.kind == "note"
-                           else "replyCard")
+        self.setObjectName(
+            "noteCardClient" if message.from_client
+            else "noteCard" if message.kind == "note" else "replyCard")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 8, 12, 8)
@@ -59,7 +60,8 @@ class MessageCard(QFrame):
         if role:
             # ShotGrid's own permission rule set, not a role Flow invented.
             chip = QLabel(role.upper())
-            chip.setObjectName("roleChip")
+            chip.setObjectName(
+                "roleChipClient" if message.from_client else "roleChip")
             head.addWidget(chip)
 
         when = QLabel(_when(message.created_at))
@@ -67,12 +69,11 @@ class MessageCard(QFrame):
         head.addWidget(when)
         head.addStretch()
 
-        if message.kind == "note":
-            reply = QPushButton("Reply")
-            reply.setObjectName("consoleBtn")
-            reply.clicked.connect(
-                lambda: self.reply_requested.emit(message))
-            head.addWidget(reply)
+        # On a reply too: answering it joins the same thread.
+        reply = QPushButton("Reply")
+        reply.setObjectName("consoleBtn")
+        reply.clicked.connect(lambda: self.reply_requested.emit(message))
+        head.addWidget(reply)
 
         if can_modify:
             # Only shown for your own messages: a button that is certain to be
@@ -199,6 +200,7 @@ class NotesPanel(QWidget):
             self._placeholder("Select a version to see its notes")
             return
         self.title.setText(f"Notes & Activity — {version.get('code') or ''}")
+        self._cooldown.stop()           # another version is not a re-read
         self.refresh()
 
     def refresh(self):
@@ -267,8 +269,14 @@ class NotesPanel(QWidget):
             for reply in thread.replies:
                 row = QWidget()
                 row_lay = QHBoxLayout(row)
-                row_lay.setContentsMargins(0, 0, 0, 0)
-                row_lay.addSpacing(28)          # the nesting, visually
+                row_lay.setContentsMargins(14, 0, 0, 0)
+                # The thread line: which note a reply answers is the whole
+                # point of nesting it.
+                rail = QFrame()
+                rail.setObjectName("threadRail")
+                rail.setFixedWidth(2)
+                row_lay.addWidget(rail)
+                row_lay.addSpacing(10)
                 row_lay.addWidget(self._card(reply), 1)
                 self.host_lay.addWidget(row)
 

@@ -97,6 +97,15 @@ def test_version_statuses_come_from_the_schema_and_are_cached():
     assert len([c for c in sg.calls if c[0] == "schema_field_read"]) == 1
 
 
+def test_owner_filter_follows_the_assigned_field_type():
+    """A List field rejects "contains"; only a Text field takes it."""
+    for kind, relation in (("list", "is"), ("text", "contains")):
+        client = fakes.client(fakes.FakeShotgun())
+        client.sg.schema_field_read = lambda e, f, kind=kind: {
+            f: {"data_type": {"value": kind}}}
+        assert client._owner_relation() == relation
+
+
 def test_steps_are_cached_too():
     sg = fakes.FakeShotgun()
     client = fakes.client(sg)

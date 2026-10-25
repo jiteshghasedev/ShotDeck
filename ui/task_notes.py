@@ -1,16 +1,21 @@
 """A task's notes as a chat, opened from the home page's Notes column.
 
 The same ShotGrid Notes and Replies the version browser shows -- anything
-linked to the task, oldest at the top -- drawn as message bubbles: yours on the
-right, everyone else's on the left, each named by the login it was signed
-with (see notes_service.sign). Posting writes a new Note on the task.
+linked to the task or to its shot (or asset), oldest at the top -- drawn as
+message bubbles: yours on the right, everyone else's on the left, each named
+by the login it was signed with (see notes_service.sign). A note that came
+from the shot rather than this task is tagged with where it came from, and
+the chips at the top narrow the chat to the task or the shot. Posting writes
+a new Note on the task.
 """
+
+import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QButtonGroup, QDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
+    QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 import applog
@@ -22,10 +27,28 @@ from .widgets import Avatar, EmptyState
 log = applog.get()
 
 
+ALL, TASK, SHOT = "all", "task", "shot"
+
+
 def _when(value):
     if not value:
         return ""
-    return value if isinstance(value, str) else f"{value:%d %b %H:%M}"
+    return value if isinstance(value, str) else f"{value:%H:%M}"
+
+
+def _day(value):
+    """Today / Yesterday / Mon 12 Oct, for the divider above a day's notes;
+    "" when ShotGrid gave no date to group by."""
+    if not isinstance(value, datetime.datetime):
+        return ""
+    today = datetime.date.today()
+    day = value.date()
+    if day == today:
+        return "Today"
+    if day == today - datetime.timedelta(days=1):
+        return "Yesterday"
+    return f"{value:%a %d %b}" + ("" if day.year == today.year
+                                  else f" {day.year}")
 
 
 class Bubble(QWidget):
@@ -38,17 +61,30 @@ class Bubble(QWidget):
         row.setSpacing(8)
 
         card = QFrame()
-        card.setObjectName("chatMine" if mine else "chatTheirs")
+        card.setObjectName("chatMine" if mine else
+                           "chatClient" if message.from_client
+                           else "chatTheirs")
         card.setMaximumWidth(520)
         lay = QVBoxLayout(card)
         lay.setContentsMargins(12, 8, 12, 8)
         lay.setSpacing(3)
 
+        top = QHBoxLayout()
+        top.setSpacing(6)
         meta = QLabel(("You" if mine else message.author_name)
+                      + ("  ·  CLIENT" if message.from_client and not mine
+                         else "")
                       + ("  ·  reply" if message.kind == "reply" else "")
                       + f"  ·  {_when(message.created_at)}")
         meta.setObjectName("chatMeta")
-        lay.addWidget(meta)
+        top.addWidget(meta)
+        top.addStretch()
+        if message.scope == SHOT:
+            where = QLabel(message.where or "Shot")
+            where.setObjectName("scopeChip")
+            where.setToolTip("Written on the shot, not on this task")
+            top.addWidget(where)
+        lay.addLayout(top)
 
         if message.subject:
             subject = QLabel(message.subject)
@@ -84,12 +120,13 @@ class TaskNotesDialog(QDialog):
         self.project = project
         self.task = task
         self.messages = []
+        self.filter = ALL
         self._jobs = set()
 
         entity = (task.get("entity") or {}).get("name") or ""
         self.setWindowTitle(f"Notes — {entity} {task.get('content', '')}"
                             .replace("  ", " "))
-        self.resize(560, 640)
+        self.resize(600, 680)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -112,6 +149,30 @@ class TaskNotesDialog(QDialog):
         head.addWidget(refresh)
         lay.addLayout(head)
 
+        # All / This task / Shot. Without a shot or asset there is nothing
+        # but the task, so the chips would only be noise.
+        self._chip_text = {ALL: "All", TASK: "This task", SHOT:
+                           (task.get("entity") or {}).get("type") or "Shot"}
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        group = QButtonGroup(self)
+        self.filter_buttons = {}
+        for key, text in self._chip_text.items():
+            btn = QPushButton(text)
+            btn.setObjectName("chip")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, k=key: self.set_filter(k))
+            group.addButton(btn)
+            chips.addWidget(btn)
+            self.filter_buttons[key] = btn
+        chips.addStretch()
+        self.filter_buttons[ALL].setChecked(True)
+        self.chips = QWidget()
+        self.chips.setLayout(chips)
+        self.chips.setVisible(bool(task.get("entity")))
+        lay.addWidget(self.chips)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.host = QWidget()
@@ -125,7 +186,7 @@ class TaskNotesDialog(QDialog):
         compose = QHBoxLayout()
         self.compose = QPlainTextEdit()
         self.compose.setPlaceholderText(
-            "Write a note…  (Ctrl+Enter to send)")
+            "Write a note on this task…  (Ctrl+Enter to send)")
         self.compose.setFixedHeight(64)
         compose.addWidget(self.compose, 1)
         self.send_btn = QPushButton("Send")
@@ -146,24 +207,56 @@ class TaskNotesDialog(QDialog):
     def refresh(self):
         self.status.setText("Loading…")
         jobs.run(self._jobs, self.service.task_chat, self._show,
-                 self.task["id"], on_error=self._failed)
+                 self.task, on_error=self._failed)
+
+    def set_filter(self, key):
+        self.filter = key
+        self.filter_buttons[key].setChecked(True)
+        self._draw()
 
     def _show(self, messages):
         self.messages = messages
+        counts = {ALL: len(messages),
+                  TASK: sum(m.scope == TASK for m in messages),
+                  SHOT: sum(m.scope == SHOT for m in messages)}
+        for key, text in self._chip_text.items():
+            self.filter_buttons[key].setText(
+                f"{text}  {counts[key]}" if counts[key] else text)
+        self.status.setText(f"{len(messages)} message"
+                            f"{'s' if len(messages) != 1 else ''}"
+                            if messages else "")
+        self._draw()
+
+    def _draw(self):
         while self.host_lay.count():
             item = self.host_lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.status.setText(f"{len(messages)} message"
-                            f"{'s' if len(messages) != 1 else ''}"
-                            if messages else "")
-        if not messages:
-            self.host_lay.addWidget(EmptyState(
-                "✎", "No notes on this task yet",
-                "Anything you write here is saved to ShotGrid with your "
-                "login on it."))
+        shown = [m for m in self.messages
+                 if self.filter == ALL or m.scope == self.filter]
+        if not shown:
+            title, hint = {
+                ALL: ("No notes yet",
+                      "Notes on this task and its shot show here. Anything "
+                      "you write is saved to ShotGrid with your login on it."),
+                TASK: ("No notes on this task yet",
+                       "Anything you write here is saved to ShotGrid with "
+                       "your login on it."),
+                SHOT: ("No notes from the shot",
+                       "Notes written on the shot, or for its other tasks, "
+                       "show here."),
+            }[self.filter]
+            self.host_lay.addWidget(EmptyState("✎", title, hint))
             return
-        for message in messages:
+        day = None
+        for message in shown:
+            label = _day(message.created_at)
+            if label and label != day:
+                day = label
+                divider = QLabel(label)
+                divider.setObjectName("dayDivider")
+                divider.setAlignment(Qt.AlignCenter)
+                self.host_lay.addWidget(divider)
             self.host_lay.addWidget(
                 Bubble(message, self.service.can_modify(message)))
         # After layout, or the maximum is still the old, shorter one.

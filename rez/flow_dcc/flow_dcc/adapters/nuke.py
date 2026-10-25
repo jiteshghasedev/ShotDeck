@@ -7,6 +7,7 @@ imported and tested outside Nuke.
 import sys
 
 from . import MENU_NAME, actions, common
+from .. import context, plates
 
 
 def _nuke():
@@ -27,7 +28,71 @@ def install():
             menu.addSeparator()
             continue
         menu.addCommand(label, getattr(module, attr))
+    menu.addSeparator()
+    menu.addCommand("Load Plate + Write", setup_shot)
+    _after_startup(setup_empty_script)
     return True
+
+
+def _after_startup(func):
+    """Run func once Nuke has finished starting, i.e. after any script named
+    on the command line is open. menu.py runs before that."""
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        from PySide2.QtCore import QTimer
+    QTimer.singleShot(0, func)
+
+
+# -- shot setup -----------------------------------------------------------
+
+def setup_empty_script():
+    """Nuke opened on an empty script for a shot task: give it the shot's
+    plate and a Write node, so the artist starts comping, not wiring."""
+    nuke = _nuke()
+    if nuke.root().name() not in ("", "Root") or nuke.allNodes():
+        return
+    ctx = context.get()
+    if ctx.entity_type != "Shot" or not ctx.entity_root:
+        return                                   # assets have no plates
+    try:
+        setup_shot(quiet=True)
+    except Exception as e:                       # never cost the artist Nuke
+        sys.stdout.write("Flow: shot setup skipped: {0}\n".format(e))
+
+
+def setup_shot(quiet=False):
+    """Read the newest plate, match the script to it, and add a Write."""
+    nuke = _nuke()
+    ctx = context.get()
+    folder = plates.plates_dir(ctx)
+    plate = plates.find_plate(folder)
+    read = None
+    if plate:
+        read = nuke.nodes.Read(file=plate["path"])
+        if plate["first"] is not None:
+            for knob in ("first", "origfirst"):
+                read[knob].setValue(plate["first"])
+            for knob in ("last", "origlast"):
+                read[knob].setValue(plate["last"])
+            root = nuke.root()
+            root["first_frame"].setValue(plate["first"])
+            root["last_frame"].setValue(plate["last"])
+        nuke.root()["format"].setValue(read["format"].value())
+    elif not quiet:
+        message("No plate found under {0}".format(folder))
+
+    path = plates.write_path(ctx)
+    if not path:
+        return read
+    write = nuke.nodes.Write(inputs=[read] if read else [])
+    write["file"].setValue(path)
+    write["file_type"].setValue("exr")
+    if "create_directories" in write.knobs():
+        write["create_directories"].setValue(True)
+    if read:
+        write.setXYpos(read.xpos(), read.ypos() + 200)
+    return read
 
 
 def save_scene(path):
