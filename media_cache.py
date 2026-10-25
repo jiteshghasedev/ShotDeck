@@ -17,6 +17,7 @@ import shutil
 import time
 import urllib.parse
 import urllib.request
+import uuid
 
 import applog
 import config
@@ -26,6 +27,12 @@ log = applog.get()
 CHUNK = 1 << 20
 # A .part file this old belongs to a Flow that died mid-download.
 STALE_PART_SECONDS = 24 * 3600
+
+
+def upload_url(version):
+    """ShotGrid's copy of the uploaded movie: a presigned link that expires."""
+    value = version.get(config.VERSION_MEDIA_FIELD)
+    return (value.get("url") if isinstance(value, dict) else value) or ""
 
 
 def path_for(version_id, url):
@@ -64,7 +71,9 @@ def fetch(version_id, url, timeout=30):
         return path
     path = path_for(version_id, url)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    part = f"{path}.{os.getpid()}.part"
+    # Unique per download: the player and the inbox prefetch can fetch the
+    # same movie at once in one Flow.
+    part = f"{path}.{uuid.uuid4().hex[:12]}.part"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response, \
                 open(part, "wb") as out:
@@ -91,6 +100,28 @@ def fetch(version_id, url, timeout=30):
     log.info("cached %s (%s)", os.path.basename(path), _size(path))
     prune()
     return path
+
+
+def prefetch(versions, limit):
+    """Cache the uploads of up to `limit` of these versions, in order.
+
+    For the review inbox, so the movie somebody is waiting on opens from disk
+    the first time. Blocking: run it on the pool. One failure does not stop
+    the rest. Returns how many were downloaded.
+    """
+    fetched = 0
+    for version in versions[:limit]:
+        url = upload_url(version)
+        if not url or cached(version.get("id"), url) or any(
+                os.path.isfile(version.get(f) or "")
+                for f in ("sg_path_to_movie", "sg_path_to_frames")):
+            continue                     # nothing to fetch, or already here
+        try:
+            fetch(version["id"], url)
+            fetched += 1
+        except Exception as e:
+            log.info("prefetch of %s skipped: %s", version.get("code"), e)
+    return fetched
 
 
 def prune(limit_bytes=None):

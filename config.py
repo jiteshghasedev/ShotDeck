@@ -306,6 +306,9 @@ def _default_media_cache():
 
 MEDIA_CACHE_DIR = os.environ.get("FLOW_MEDIA_CACHE") or _default_media_cache()
 MEDIA_CACHE_GB = float(os.environ.get("FLOW_MEDIA_CACHE_GB", "20"))
+# How many of the review inbox's versions are downloaded in the background
+# when it loads, newest first, so the first open plays from disk. 0 is off.
+REVIEW_PREFETCH = int(os.environ.get("FLOW_REVIEW_PREFETCH", "10") or 0)
 
 # Per-user UI choices: the app each task was last launched in, whether the
 # home page's projects section is folded. See ui/ui_state.py.

@@ -1789,6 +1789,58 @@ def test_client_notes_are_coloured_apart_from_internal_ones():
     assert Bubble(client, True).findChild(QFrame, "chatMine"),         "your own note stays yours"
 
 
+def test_an_unreachable_shotgrid_shows_and_backs_off():
+    from ui.main_window import MainWindow
+    sg = fakes.FakeShotgun()
+    win = MainWindow(fakes.client(sg), login="jitesh")
+    win.show()
+    settle()
+    normal = win._sync_timer.interval()
+
+    sg.fail_find = RuntimeError("Unable to find the server")
+    win._poll_sync()
+    settle()
+    assert win.offline_btn.isVisible()
+    assert "Live sync paused" in win.offline_btn.text()
+    assert "Unable to find the server" in win.offline_btn.toolTip()
+    first = win._sync_timer.interval()
+    win._poll_sync()
+    settle()
+    assert win._sync_timer.interval() > first > normal, "retries space out"
+    assert win._sync_timer.interval() <= 300 * 1000
+
+    sg.fail_find = None
+    win.offline_btn.click()                    # Retry now
+    settle()
+    assert not win.offline_btn.isVisible()
+    assert win._sync_timer.interval() == normal
+    assert "Back online" in win.statusBar().currentMessage()
+
+
+def test_the_inbox_downloads_its_movies_ahead():
+    import media_cache
+    from ui import review_page
+    sg = fakes.FakeShotgun()
+    page = review_page.ReviewPage(fakes.client(sg))
+    seen = []
+    real = media_cache.prefetch
+    media_cache.prefetch = lambda versions, limit: seen.append(
+        ([v["id"] for v in versions], limit)) or 0
+
+    class Item:
+        def __init__(self, version):
+            self.version = version
+    try:
+        v1, v2 = {"id": 11}, {"id": 12}
+        page._prefetch([Item(v1), Item(v2), Item(v1), Item(None)])
+        settle()
+    finally:
+        media_cache.prefetch = real
+    assert seen == [([11, 12], config.REVIEW_PREFETCH)], \
+        "each version once, newest first"
+    assert not page._prefetching
+
+
 def test_live_sync_reloads_only_for_events_that_touch_the_list():
     from ui.main_window import MainWindow
     sg = fakes.FakeShotgun()

@@ -53,10 +53,7 @@ def local_media(version):
     return ""
 
 
-def stream_url(version):
-    """ShotGrid's copy of the uploaded movie: a presigned link that expires."""
-    value = version.get(config.VERSION_MEDIA_FIELD)
-    return (value.get("url") if isinstance(value, dict) else value) or ""
+stream_url = media_cache.upload_url
 
 
 class VersionMedia:

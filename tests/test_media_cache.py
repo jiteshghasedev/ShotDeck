@@ -93,6 +93,35 @@ def test_a_stale_part_file_is_cleared():
     assert not os.path.exists(part)
 
 
+def test_the_inbox_prefetch_caches_newest_first_up_to_the_limit():
+    _cache_dir("prefetch")
+    rows = []
+    for i in range(4):
+        _source, url = _upload(f"inbox_v00{i}.mov")
+        rows.append({"id": 300 + i, "code": f"v00{i}",
+                     "sg_uploaded_movie": {"url": url}})
+    local, _url = _upload("on_disk.mov")
+    rows.insert(0, {"id": 399, "code": "local", "sg_path_to_movie": local,
+                    "sg_uploaded_movie": {"url": _url}})
+    rows.insert(1, {"id": 398, "code": "no upload"})
+
+    assert media_cache.prefetch(rows, limit=4) == 2, \
+        "the local file and the version with no upload are skipped"
+    assert media_cache.cached(300, rows[2]["sg_uploaded_movie"]["url"])
+    assert media_cache.cached(301, rows[3]["sg_uploaded_movie"]["url"])
+    assert not media_cache.cached(302, rows[4]["sg_uploaded_movie"]["url"])
+    assert media_cache.prefetch(rows, limit=4) == 0, "cached ones are not refetched"
+
+
+def test_a_failed_prefetch_does_not_stop_the_rest():
+    _cache_dir("prefetch_fail")
+    missing = pathlib.Path(TMP, "s3", "gone.mov").as_uri()
+    _source, url = _upload("still_here.mov")
+    rows = [{"id": 1, "code": "gone", "sg_uploaded_movie": {"url": missing}},
+            {"id": 2, "code": "here", "sg_uploaded_movie": {"url": url}}]
+    assert media_cache.prefetch(rows, limit=5) == 1
+
+
 def test_the_default_location_suits_each_platform():
     path = config._default_media_cache()
     assert path.endswith(os.path.join("Flow", "media_cache")) or \

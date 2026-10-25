@@ -37,6 +37,11 @@ def is_production(login):
     return login in config.PRODUCTION_USERS
 
 
+def _duration(seconds):
+    """120 -> "2 min", 45 -> "45s": for a retry the artist is waiting on."""
+    return f"{seconds // 60} min" if seconds >= 60 else f"{seconds}s"
+
+
 class MainWindow(QMainWindow):
     def __init__(self, sg, login=None, auth_result=None, production=None):
         super().__init__()
@@ -61,6 +66,7 @@ class MainWindow(QMainWindow):
         self._jobs = set()        # in-flight workers, see _run()
         self._event_id = None     # newest ShotGrid event seen, for live sync
         self._syncing = False
+        self._sync_failures = 0   # in a row; spaces the retries out
         self._sync_timer = QTimer(self)
         self._sync_timer.setInterval(max(config.SYNC_SECONDS, 1) * 1000)
         self._sync_timer.timeout.connect(self._poll_sync)
@@ -222,6 +228,14 @@ class MainWindow(QMainWindow):
         self.review_page.compare_requested.connect(self.compare_review_item)
         self.review_page.count_changed.connect(self._on_review_count)
 
+        # Shown only while live sync cannot reach ShotGrid: the task list is
+        # then as old as the last good poll, and the artist should know it.
+        self.offline_btn = QPushButton("")
+        self.offline_btn.setObjectName("consoleBtn")
+        self.offline_btn.setCursor(Qt.PointingHandCursor)
+        self.offline_btn.clicked.connect(self._poll_sync)
+        self.offline_btn.hide()
+        self.statusBar().addPermanentWidget(self.offline_btn)
         self.statusBar().showMessage("Connecting to ShotGrid...")
         self._run(self._bootstrap, self._on_bootstrap)
 
@@ -428,13 +442,34 @@ class MainWindow(QMainWindow):
 
         def failed(message):
             self._syncing = False
-            log.warning("live sync skipped: %s", message)
+            self._sync_failures += 1
+            # Further apart each time, up to five minutes: a dropped network
+            # is not helped by being asked every minute.
+            delay = min(max(config.SYNC_SECONDS, 1) * 2 ** self._sync_failures,
+                        300)
+            self._sync_timer.setInterval(delay * 1000)
+            log.warning("live sync skipped: %s (next try in %ss)",
+                        message, delay)
+            self.offline_btn.setText(
+                f"⚠ Live sync paused — retrying in {_duration(delay)} · "
+                f"Retry now")
+            self.offline_btn.setToolTip(
+                f"ShotGrid did not answer: {message}\n\nThe task list is as "
+                f"of the last successful sync.")
+            self.offline_btn.show()
 
         self._run(self.sg.task_events_since, self._on_sync, self._event_id,
                   on_error=failed)
 
     def _on_sync(self, result):
         self._syncing = False
+        if self._sync_failures:
+            self._sync_failures = 0
+            self._sync_timer.setInterval(max(config.SYNC_SECONDS, 1) * 1000)
+            self.offline_btn.hide()
+            # Nothing was missed: the events since the last id seen are in
+            # this very result.
+            self.statusBar().showMessage("Back online — ShotGrid synced", 10000)
         starting = self._event_id is None
         self._event_id, events = result
         if starting or not self._sync_relevant(events):
