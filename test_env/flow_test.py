@@ -27,6 +27,7 @@ os.environ["FLOW_JOBS_ROOT"] = JOBS
 os.environ.setdefault("FLOW_LOG_DIR", os.path.join(STATE, "logs"))
 os.environ.setdefault("FLOW_UI_STATE", os.path.join(STATE, "ui_state.json"))
 os.environ.setdefault("FLOW_REVIEW_STATE", os.path.join(STATE, "review_read.json"))
+os.environ.setdefault("FLOW_MEDIA_CACHE", os.path.join(STATE, "media_cache"))
 
 sys.path.insert(0, ROOT)
 

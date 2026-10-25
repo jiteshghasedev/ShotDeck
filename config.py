@@ -290,6 +290,23 @@ REVIEW_READ_STATE_PATH = os.environ.get(
     "FLOW_REVIEW_STATE",
     os.path.expanduser("~/.flow/review_read.json"))
 
+# Local copies of the movies uploaded to ShotGrid, so the review player plays
+# from disk instead of streaming (media_cache.py). Per user and per machine:
+# %LOCALAPPDATA%\Flow\media_cache on Windows, $XDG_CACHE_HOME/flow/media
+# (~/.cache/flow/media) on Linux. Point FLOW_MEDIA_CACHE at a local disk
+# where home directories live on NFS. The least recently played copies go
+# first once the cache passes FLOW_MEDIA_CACHE_GB.
+def _default_media_cache():
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or             os.path.expanduser("~/AppData/Local")
+        return os.path.join(base, "Flow", "media_cache")
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "flow", "media")
+
+
+MEDIA_CACHE_DIR = os.environ.get("FLOW_MEDIA_CACHE") or _default_media_cache()
+MEDIA_CACHE_GB = float(os.environ.get("FLOW_MEDIA_CACHE_GB", "20"))
+
 # Per-user UI choices: the app each task was last launched in, whether the
 # home page's projects section is folded. See ui/ui_state.py.
 UI_STATE_PATH = os.environ.get(

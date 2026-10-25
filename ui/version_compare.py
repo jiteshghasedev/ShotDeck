@@ -8,25 +8,28 @@ differences exactly like a still does. B follows A's playhead rather than
 being frame-locked to it; RV is one click away for a frame-accurate sign-off.
 
 Media comes from whatever the Version has that this machine can read: the
-local path first, ShotGrid's uploaded movie (streamed) second, the ShotGrid
+local path first, ShotGrid's uploaded movie second -- from the local cache
+once media_cache has a copy, streamed while it downloads -- and the ShotGrid
 thumbnail last. The notes panel sits on the right, full screen or not.
 """
 
 import os
 import time
+import urllib.error
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QFrame, QSlider, QWidget, QButtonGroup, QMessageBox,
+    QFrame, QSlider, QWidget, QButtonGroup, QMessageBox, QSizePolicy,
 )
 
 import applog
 import config
+import media_cache
 import media_inspector
 import rv_player
-from . import jobs, theme
+from . import jobs, theme, ui_state
 from .notes_panel import NotesPanel
 from .widgets import load_thumbnail
 
@@ -67,18 +70,20 @@ class VersionMedia:
     compare and two grey panes.
     """
 
-    LOCAL, STREAM, THUMBNAIL, NONE = "local", "stream", "thumbnail", "none"
+    LOCAL, CACHED, STREAM, THUMBNAIL, NONE = (
+        "local", "cached", "stream", "thumbnail", "none")
 
     def __init__(self, version):
         self.version = version
         self.path = local_media(version)
+        self.stream = "" if self.path else stream_url(version)
         # Anything local that is not a still goes to the player, which says so
         # itself if it cannot decode it.
         if self.path:
             self.movie = "" if config.media_kind(self.path) == "image" \
                 else self.path
         else:
-            self.movie = stream_url(version)
+            self.movie = media_cache.cached(version.get("id"), self.stream)                 or self.stream
         self.pixmap = QPixmap()
         self.info = media_inspector.inspect(self.path) if self.path else None
         self.error = ""
@@ -94,7 +99,9 @@ class VersionMedia:
             else:
                 self.source = self.LOCAL
         elif self.movie:
-            self.source = self.LOCAL if self.path else self.STREAM
+            self.source = (self.LOCAL if self.path else
+                           self.STREAM if self.movie == self.stream else
+                           self.CACHED)
             self.error = "Loading the movie…"
         else:
             self.error = "Loading the ShotGrid thumbnail…" \
@@ -121,7 +128,8 @@ class VersionMedia:
     @property
     def source_label(self):
         return {self.LOCAL: "full-resolution media",
-                self.STREAM: "ShotGrid upload (streamed)",
+                self.CACHED: "ShotGrid upload (cached here)",
+                self.STREAM: "ShotGrid upload (streaming, caching…)",
                 self.THUMBNAIL: "ShotGrid thumbnail",
                 self.NONE: "no media"}[self.source]
 
@@ -328,6 +336,9 @@ class VersionCompare(QDialog):
         self.heading.setObjectName("headerTitle")
         top.addWidget(self.heading)
         top.addStretch()
+        self.notes_btn = self._button("Hide notes", self.toggle_notes)
+        self.notes_btn.setToolTip("N to hide or show the notes")
+        top.addWidget(self.notes_btn)
         self.full_btn = self._button("Full screen", self.toggle_fullscreen)
         self.full_btn.setToolTip("F to toggle, Esc to leave")
         top.addWidget(self.full_btn)
@@ -356,7 +367,17 @@ class VersionCompare(QDialog):
         self.meta_host = self._metadata()
         left.addWidget(self.meta_host)
 
-        root.addWidget(self._notes_column())
+        self.notes_host = self._notes_column()
+        root.addWidget(self.notes_host)
+        # What is left of the notes while they are hidden: a thin tab at the
+        # edge, so getting them back is one click, not a hunt for a button.
+        self.notes_tab = self._button("◀", self.toggle_notes, "termBtn")
+        self.notes_tab.setToolTip("Show notes (N)")
+        self.notes_tab.setFixedWidth(22)
+        self.notes_tab.setStyleSheet("padding: 0;")   # or ◀ is clipped
+        self.notes_tab.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        root.addWidget(self.notes_tab)
+        self._set_notes_visible(not ui_state.get("player_notes_hidden", False))
 
         self.set_versions(version_a, version_b)
 
@@ -506,9 +527,11 @@ class VersionCompare(QDialog):
         # lines saying "none" — the Terminal panel answers it without a
         # debugging session.
         for _version, media in self._sides():
+            # The query is ShotGrid's signature: a key to the file, not a
+            # thing to keep in a log.
             log.info("player %s (%s: %s)", media.code, media.source,
-                     media.movie or media.path or media.thumbnail_url
-                     or "nothing")
+                     (media.movie or media.path or media.thumbnail_url
+                      or "nothing").split("?", 1)[0])
 
         for button in self.mode_buttons.buttons():
             button.setVisible(not self.single)
@@ -523,9 +546,12 @@ class VersionCompare(QDialog):
             "This machine cannot read the media for RV")
 
         self.notes_switch.setVisible(not self.single)
-        for button, media in zip(self.notes_buttons,
-                                 (self.media_a, self.media_b)):
-            button.setText(f"Notes · {media.code}")
+        for side, button, media in zip("AB", self.notes_buttons,
+                                       (self.media_a, self.media_b)):
+            # The tail is what tells two versions of one shot apart (v004);
+            # the full name would be cut off at this width.
+            button.setText(f"{side} · {media.code.rsplit('_', 1)[-1]}")
+            button.setToolTip(f"Notes on {media.code}")
 
         self._build_headers()
         self._build_metadata()
@@ -594,12 +620,24 @@ class VersionCompare(QDialog):
         else:
             self.showNormal()
 
+    def toggle_notes(self):
+        visible = not self.notes_host.isVisible()
+        self._set_notes_visible(visible)
+        ui_state.put("player_notes_hidden", not visible)
+
+    def _set_notes_visible(self, visible):
+        self.notes_host.setVisible(visible)
+        self.notes_tab.setVisible(not visible)
+        self.notes_btn.setText("Hide notes" if visible else "Show notes")
+
     def keyPressEvent(self, event):
         key = event.key()
         if key == Qt.Key_Space and self.players:
             self._toggle_play()
         elif key in (Qt.Key_Left, Qt.Key_Right) and self.players:
             self._step(-1 if key == Qt.Key_Left else 1)
+        elif key == Qt.Key_N:
+            self.toggle_notes()
         elif key == Qt.Key_F:
             self.toggle_fullscreen()
         elif key == Qt.Key_Escape and self.isFullScreen():
@@ -636,7 +674,8 @@ class VersionCompare(QDialog):
             # nobody should have to guess which.
             source = QLabel(f"Showing {media.source_label}")
             source.setObjectName(
-                "tileSub" if media.source in (media.LOCAL, media.STREAM)
+                "tileSub" if media.source in (media.LOCAL, media.CACHED,
+                                              media.STREAM)
                 else "checkWarn")
             lay.addWidget(source)
             self.headers.addWidget(card)
@@ -705,6 +744,8 @@ class VersionCompare(QDialog):
                 if os.path.isfile(media.movie) else QUrl(media.movie)
             player.setSource(source)
             self.players.append(player)
+            if media.source == media.STREAM:
+                self._cache(media, player)
 
         if self.players:
             master = self.players[0]
@@ -732,27 +773,69 @@ class VersionCompare(QDialog):
         if media.source == media.STREAM and not media.relinked:
             media.relinked = True
 
-            def relink():
-                fresh = self.sg.version(media.version["id"],
-                                        [config.VERSION_MEDIA_FIELD])
-                return stream_url(fresh or {})
-
             def retry(url):
                 if player not in self.players:
                     return                    # closed or switched meanwhile
                 if not url:
                     self._movie_error(media, player, text)
                     return
-                media.movie = url
+                media.movie = media.stream = url
                 player.setSource(QUrl(url))
                 player.play()
 
-            jobs.run(self._jobs, relink, retry,
+            jobs.run(self._jobs, self._fresh_url, retry, media,
                      on_error=lambda _m: self._movie_error(media, player, text))
             return
         log.warning("could not play %s: %s", media.code, text)
         media.error = f"Could not play this movie: {text}"
         self.image_view.update()
+
+    def _fresh_url(self, media):
+        """A new link to the upload. On the pool: it asks ShotGrid."""
+        fresh = self.sg.version(media.version["id"],
+                                [config.VERSION_MEDIA_FIELD])
+        return stream_url(fresh or {})
+
+    def _cache(self, media, player):
+        """Download the upload while it streams, then play the local copy:
+        no stutter now, and the next open starts from disk."""
+        version_id = media.version.get("id")
+
+        def fetch():
+            try:
+                return media_cache.fetch(version_id, media.stream)
+            except urllib.error.HTTPError as e:
+                if e.code != 403:           # 403: the link has expired
+                    raise
+                return media_cache.fetch(version_id, self._fresh_url(media))
+
+        jobs.run(self._jobs, fetch,
+                 lambda path: self._use_cached(media, player, path),
+                 on_error=lambda message: log.warning(
+                     "could not cache %s, still streaming: %s",
+                     media.code, message))
+
+    def _use_cached(self, media, player, path):
+        """Swap a streaming player onto its local copy, at the same frame."""
+        if player not in self.players:
+            return                        # closed or switched meanwhile
+        media.movie, media.source = path, media.CACHED
+        master = self.players[0]
+        position = master.position()
+        playing = master.playbackState() == QMediaPlayer.PlayingState
+
+        def loaded(status):
+            # A seek before the new source has loaded is dropped.
+            if status != QMediaPlayer.MediaStatus.LoadedMedia:
+                return
+            player.mediaStatusChanged.disconnect(loaded)
+            player.setPosition(position)
+            if playing:
+                player.play()
+
+        player.mediaStatusChanged.connect(loaded)
+        player.setSource(QUrl.fromLocalFile(path))
+        self._build_headers()
 
     def _duration_known(self, duration):
         self.scrub.setRange(0, duration)

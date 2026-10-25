@@ -69,12 +69,11 @@ class MessageCard(QFrame):
         head.addWidget(when)
         head.addStretch()
 
-        if message.kind == "note":
-            reply = QPushButton("Reply")
-            reply.setObjectName("consoleBtn")
-            reply.clicked.connect(
-                lambda: self.reply_requested.emit(message))
-            head.addWidget(reply)
+        # On a reply too: answering it joins the same thread.
+        reply = QPushButton("Reply")
+        reply.setObjectName("consoleBtn")
+        reply.clicked.connect(lambda: self.reply_requested.emit(message))
+        head.addWidget(reply)
 
         if can_modify:
             # Only shown for your own messages: a button that is certain to be
@@ -270,8 +269,14 @@ class NotesPanel(QWidget):
             for reply in thread.replies:
                 row = QWidget()
                 row_lay = QHBoxLayout(row)
-                row_lay.setContentsMargins(0, 0, 0, 0)
-                row_lay.addSpacing(28)          # the nesting, visually
+                row_lay.setContentsMargins(14, 0, 0, 0)
+                # The thread line: which note a reply answers is the whole
+                # point of nesting it.
+                rail = QFrame()
+                rail.setObjectName("threadRail")
+                rail.setFixedWidth(2)
+                row_lay.addWidget(rail)
+                row_lay.addSpacing(10)
                 row_lay.addWidget(self._card(reply), 1)
                 self.host_lay.addWidget(row)
 

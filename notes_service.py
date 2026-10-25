@@ -264,7 +264,12 @@ class NotesService:
         content = (content or "").strip()
         if not content:
             raise ValueError("A reply needs something in it.")
-        note_id = note.id if isinstance(note, Message) else note["id"]
+        if isinstance(note, Message) and note.kind == "reply":
+            # ShotGrid threads are one level deep: answering a reply is
+            # another reply on its note.
+            note_id = (note.raw.get("entity") or {}).get("id")
+        else:
+            note_id = note.id if isinstance(note, Message) else note["id"]
         return self.sg.create_reply(note_id, content)
 
     def can_modify(self, message):

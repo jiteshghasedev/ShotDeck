@@ -492,6 +492,25 @@ def test_replying_from_the_card_creates_a_reply():
     assert sg.replies[-1]["entity"]["id"] == thread.id
 
 
+def test_answering_a_reply_stays_in_its_thread():
+    sg, browser = _browser_with_notes()
+    thread = browser.notes.threads[0]
+    browser.notes._start_reply(thread.replies[0])
+    browser.notes.compose.setPlainText("Agreed.")
+    browser.notes._post()
+    settle()
+    assert sg.replies[-1]["content"] == "Agreed."
+    assert sg.replies[-1]["entity"]["id"] == thread.id, \
+        "a reply to a reply belongs to the note"
+
+
+def test_replies_hang_off_a_thread_line():
+    from PySide6.QtWidgets import QFrame
+    sg, browser = _browser_with_notes()
+    rails = browser.notes.findChildren(QFrame, "threadRail")
+    assert len(rails) == sum(len(t.replies) for t in browser.notes.threads)
+
+
 def test_the_activity_tab_merges_notes_and_the_publish():
     sg, browser = _browser_with_notes()
     browser.tabs.setCurrentIndex(2)          # Activity
@@ -779,6 +798,56 @@ def test_an_expired_stream_link_is_fetched_again_once():
     dialog.players.remove(player)
 
 
+def test_a_cached_upload_plays_from_disk():
+    import media_cache
+    from ui.version_compare import VersionMedia
+    url = "https://sg.example/s3/abc/AD1008_v004.mov?sig=1"
+    local = media_cache.path_for(4004, url)
+    os.makedirs(os.path.dirname(local), exist_ok=True)
+    open(local, "wb").close()
+    media = VersionMedia({"id": 4004, "code": "v004",
+                          "sg_uploaded_movie": {"url": url}})
+    assert media.movie == local
+    assert media.source == media.CACHED
+    os.remove(local)
+
+
+def test_a_streaming_player_moves_onto_its_cached_copy_in_place():
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtMultimedia import QMediaPlayer
+    from ui.version_compare import VersionMedia
+
+    class StubPlayer(QObject):
+        mediaStatusChanged = Signal(object)
+
+        def __init__(self):
+            super().__init__()
+            self.sources, self.positions = [], []
+        def position(self): return 1234
+        def playbackState(self): return QMediaPlayer.PlayingState
+        def setSource(self, url):
+            self.sources.append(os.path.normpath(url.toLocalFile()))
+        def setPosition(self, ms): self.positions.append(ms)
+        def play(self): pass
+
+    dialog = _compare(_image_version("swap_a"), _image_version("swap_b"))
+    media = VersionMedia({"id": 77, "code": "v077", "sg_uploaded_movie": {
+        "url": "https://sg.example/s3/v077.mov"}})
+    player = StubPlayer()
+    dialog.players.append(player)
+    path = os.path.join(TMP, "v077.mov")
+    dialog._use_cached(media, player, path)
+    player.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadingMedia)
+    assert player.positions == [], "no seek until the copy has loaded"
+    player.mediaStatusChanged.emit(QMediaPlayer.MediaStatus.LoadedMedia)
+    assert player.sources == [path]
+    assert player.positions == [1234], "same frame, not back to the start"
+    assert media.source == media.CACHED
+    dialog.players.remove(player)
+    dialog._use_cached(media, player, path)          # closed meanwhile
+    assert player.sources == [path]
+
+
 def test_a_single_version_plays_without_the_compare_modes():
     dialog = _compare(_image_version("solo_v001"), None)
     assert dialog.windowTitle() == "Version Player"
@@ -810,6 +879,23 @@ def test_full_screen_keeps_the_picture_and_the_notes():
     dialog.toggle_fullscreen()
     settle(200)
     assert dialog.meta_host.isVisible()
+
+
+def test_the_notes_fold_away_for_the_full_picture():
+    from PySide6.QtTest import QTest
+    from ui import ui_state
+    dialog = _compare(_image_version("fold_a"), _image_version("fold_b"))
+    width = dialog.image_view.width()
+    QTest.keyClick(dialog, Qt.Key_N)
+    settle(200)
+    assert not dialog.notes_host.isVisible()
+    assert dialog.notes_tab.isVisible(), "one click brings them back"
+    assert dialog.image_view.width() > width, "the picture takes the room"
+    assert ui_state.get("player_notes_hidden") is True
+    dialog.notes_tab.click()
+    settle(200)
+    assert dialog.notes_host.isVisible() and not dialog.notes_tab.isVisible()
+    assert ui_state.get("player_notes_hidden") is False
 
 
 def test_notes_are_visible_while_comparing():

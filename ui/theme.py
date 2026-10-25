@@ -260,6 +260,7 @@ QComboBox QAbstractItemView {{
     background: {SURFACE_SUNK}; border: 1px solid {BORDER};
     border-left: 2px solid {BORDER_HI}; border-radius: {RADIUS_SM}px;
 }}
+#threadRail {{ background: {BORDER_HI}; border-radius: 1px; }}
 #noteSubject {{ color: {TEXT}; font-weight: 600; font-size: 12px; }}
 #noteBody {{ color: {TEXT_DIM}; font-size: 12px; }}
 #noteCardClient {{
