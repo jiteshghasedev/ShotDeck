@@ -114,7 +114,10 @@ class NotesService:
         Three queries at most, whatever the note count: the notes, their
         replies in one go, and the authors in one go.
         """
-        notes = self.sg.notes_for_version(version_id) or []
+        return self.thread(self.sg.notes_for_version(version_id) or [])
+
+    def thread(self, notes):
+        """threads() for any notes: a version's, a task's, a shot's."""
         if not notes:
             return []
 

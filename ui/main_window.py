@@ -751,16 +751,9 @@ class MainWindow(QMainWindow):
     def _mail_status_change(self, task, note, old, code):
         """Mail whoever acts next. On the worker, after the status is saved:
         a failure here is reported, never undoes it."""
-        if code == config.REVIEW_MAIL_STATUS:
-            return "the leads are mailed by ShotGrid"
-        try:
-            to = status_mail.send(
-                self.sg.sg, task, notes_service.signer_name(self.login),
-                self.email, note, old, code)
-        except Exception as e:
-            log.warning("%s mail for task %s failed: %s", code, task["id"], e)
-            return f"mail failed: {e}"
-        return f"mailed {', '.join(to)}" if to else "nobody to mail"
+        return status_mail.after_change(
+            self.sg.sg, task, notes_service.signer_name(self.login),
+            self.email, note, old, code)
 
     def open_folder(self, path):
         try:

@@ -85,6 +85,24 @@ def send(sg, task, artist, email, note, old, new):
     return to
 
 
+def after_change(sg, task, artist, email, note, old, new):
+    """Mail whoever acts next, once the status is saved. Flow desktop and the
+    web app (FLOW_PROXY) both call this, so a change mails the same people
+    wherever it was made.
+
+    Never raises: a failed mail must not undo a saved status. Returns a line
+    for the user.
+    """
+    if new == config.REVIEW_MAIL_STATUS:
+        return "the leads are mailed by ShotGrid"
+    try:
+        to = send(sg, task, artist, email, note, old, new)
+    except Exception as e:
+        log.warning("%s mail for task %s failed: %s", new, task["id"], e)
+        return f"mail failed: {e}"
+    return f"mailed {', '.join(to)}" if to else "nobody to mail"
+
+
 def _send_email():
     if config.PIPELINE_ROOT not in sys.path:
         sys.path.insert(0, config.PIPELINE_ROOT)

@@ -112,6 +112,39 @@ SOFTWARE_FIELDS = [
 
 PROJECT_FIELDS = ["name", "sg_status", "image", "sg_description", "tank_name"]
 
+# -- web Projects page (FLOW_PROXY) -------------------------------------------
+#
+# Columns the web Projects page asks for. A wish list, not a promise: it is
+# intersected with the site's own Project schema first, so a field this site
+# does not have drops out instead of failing the whole find(). Add custom
+# fields here once FLOW_PROXY's /api/projects/meta shows they exist.
+PROJECT_LIST_FIELDS = [
+    "name", "tank_name", "sg_status", "sg_type", "sg_description",
+    "sg_client", "sg_producer", "sg_project_manager", "sg_coordinator",
+    "start_date", "end_date", "sg_start_date", "sg_due_date",
+    "sg_delivery_date", "sg_priority", "image", "created_at", "updated_at",
+]
+# The only Project fields the web page may write. sg_status is deliberately
+# absent: it decides which projects Flow lists, so one slip hides a show from
+# every artist.
+PROJECT_EDITABLE_FIELDS = ["sg_description"]
+# Task fields the web Tasks page shows on top of TASK_FIELDS, if the site's
+# Task schema has them. Same wish-list rule as PROJECT_LIST_FIELDS.
+TASK_LIST_EXTRA_FIELDS = ["sg_priority_1", "sg_description", "updated_at"]
+# The only Task fields the web page may write.
+TASK_EDITABLE_FIELDS = ["sg_status_list", "start_date", "due_date",
+                        TASK_OWNER_FIELD]
+# Version fields the web review page reads, if the site has them. The mp4 and
+# webm transcodes are what a browser can play; the original upload is often a
+# .mov it cannot. All are presigned links that expire.
+VERSION_WEB_MEDIA_FIELDS = [
+    "sg_uploaded_movie_mp4", "sg_uploaded_movie_webm", "sg_uploaded_movie",
+    "filmstrip_image", "sg_uploaded_movie_transcoding_status",
+    "uploaded_movie_duration", "sg_uploaded_movie_frame_rate",
+]
+# The only Version field the web page may write: the review status.
+VERSION_EDITABLE_FIELDS = ["sg_status_list"]
+
 # Field on Software holding the rez request, e.g. "maya-2024 keentools-6.2".
 SOFTWARE_REZ_FIELD = "sg_rez_packages"
 # Package appended to every rez request so in-DCC tools can `import

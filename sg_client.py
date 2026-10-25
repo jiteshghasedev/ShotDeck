@@ -54,6 +54,23 @@ def _media_fields(info):
     return data
 
 
+class UpdateConflict(Exception):
+    """The record changed in ShotGrid after the caller loaded it.
+
+    `current` is the record as ShotGrid holds it now, so the caller can show
+    it instead of overwriting it.
+    """
+
+    def __init__(self, current):
+        super().__init__("changed in ShotGrid since it was loaded")
+        self.current = current
+
+
+def _stamp(value):
+    """updated_at as the comparable string the web page sends back."""
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
 class SGClient:
     # The signed-in AD login. Every write goes in as the one script user, so
     # notes carry this in their text to say who wrote them. Set by MainWindow.
@@ -121,6 +138,7 @@ class SGClient:
         self._version_field_cache = None
         self._optional_fields = []       # the ones this site turned out to have
         self._users = {}                 # id -> HumanUser, for note authors
+        self._schemas = {}               # entity type -> schema_field_read()
 
     @property
     def api_identity(self):
@@ -198,6 +216,169 @@ class SGClient:
             config.PROJECT_FIELDS,
             order=[{"field_name": "name", "direction": "asc"}],
         )
+
+    # -- projects, for the web Projects page (FLOW_PROXY) ------------------
+
+    def entity_schema(self, entity_type):
+        """{field: schema properties} for every field the site has on it.
+
+        Read once per client: callers intersect their wish lists with it, so a
+        field this site lacks never fails a whole find().
+        """
+        if entity_type not in self._schemas:
+            self._schemas[entity_type] = self.sg.schema_field_read(entity_type)
+        return self._schemas[entity_type]
+
+    def projects(self, fields):
+        """Every non-template project, whatever its status.
+
+        One call however many there are: shotgun_api3 pages through the
+        result itself when no limit is given.
+        """
+        return self.sg.find(
+            "Project", [["is_template", "is", False]], fields,
+            order=[{"field_name": "name", "direction": "asc"}])
+
+    def project(self, project_id, fields):
+        return self.sg.find_one("Project", [["id", "is", project_id]], fields)
+
+    def _guarded_update(self, entity_type, entity_id, data, expected_updated_at,
+                        fields, allowed, before_write=None):
+        """Write `data` if the record is still as the caller last saw it.
+
+        Returns (before, after), both read from ShotGrid: after is what the
+        server now holds, which is what a page should show -- not what it
+        asked for. Only `allowed` fields may be written; the check lives here
+        so no caller can skip it. before_write(before) runs after the check
+        and before the write.
+        """
+        refused = set(data) - set(allowed)
+        if refused:
+            raise ValueError(f"not editable: {', '.join(sorted(refused))}")
+
+        def read():
+            return self.sg.find_one(entity_type, [["id", "is", entity_id]], fields)
+        before = read()
+        if before is None:
+            raise LookupError(f"{entity_type} {entity_id} not found")
+        if _stamp(before.get("updated_at")) != _stamp(expected_updated_at):
+            raise UpdateConflict(before)
+        if before_write:
+            before_write(before)
+        # shortcut: read-then-write leaves a sub-second race, as ShotGrid has
+        # no conditional update; move to an event-log check if edits collide.
+        log.info("updating %s %s: %s", entity_type, entity_id, sorted(data))
+        self.sg.update(entity_type, entity_id, data)
+        return before, read()
+
+    def _status_note(self, note, data, project, version, task):
+        """Flow's note with a status change. A failed note never stops the
+        change, as on the desktop."""
+        if not (note and "sg_status_list" in data):
+            return
+        try:
+            self.create_note(project, version, note,
+                             f"Set to {data['sg_status_list']}", task)
+        except Exception as e:
+            log.warning("status note failed: %s", e)
+
+    def update_project(self, project_id, data, expected_updated_at, fields):
+        """_guarded_update for config.PROJECT_EDITABLE_FIELDS."""
+        return self._guarded_update("Project", project_id, data, expected_updated_at,
+                                    fields, config.PROJECT_EDITABLE_FIELDS)
+
+    # -- tasks, for the web Tasks page (FLOW_PROXY) ------------------------
+    #
+    # Stateless counterparts of resolve_owner / _my_tasks: the web app serves
+    # many people from one client, so nothing here keeps a current user.
+
+    def owner_for(self, user_email):
+        """(owner entity or None, the value Task.sg_assigned_to stores for them)."""
+        fields = [config.TASK_OWNER_MATCH_FIELD, "name"]
+        if config.TASK_OWNER_STRING_FIELD not in fields:
+            fields.append(config.TASK_OWNER_STRING_FIELD)
+        owner = self.sg.find_one(
+            config.TASK_OWNER_ENTITY,
+            [[config.TASK_OWNER_MATCH_FIELD, "is", user_email]], fields)
+        if config.TASK_OWNER_IS_ENTITY:
+            return owner, None
+        return owner, (owner or {}).get(config.TASK_OWNER_STRING_FIELD) or user_email
+
+    def assigned_to_filter(self, owner, value):
+        """Server-side filter for the tasks assigned to one person.
+
+        A List field (5and8's, as of 2026-10-22) holds one person and takes
+        only "is". A Text field holds "a@x, b@x"; plain "contains" would put
+        sal@'s tasks on al@'s list, so a match must start the field or follow
+        a separator. Either way paging stays exact without filtering after.
+        """
+        field = config.TASK_OWNER_FIELD
+        if config.TASK_OWNER_IS_ENTITY:
+            return [field, "is", {"type": owner["type"], "id": owner["id"]}]
+        if self._owner_relation() == "is":
+            return [field, "is", value]
+        return {"filter_operator": "any", "filters": [
+            [field, "starts_with", value],
+            [field, "contains", f",{value}"],
+            [field, "contains", f";{value}"],
+            [field, "contains", f" {value}"],
+        ]}
+
+    def task_page(self, filters, fields, order, page, page_size):
+        """(one page of tasks, how many match in all): two calls at any size."""
+        rows = self.sg.find("Task", filters, fields, order=order,
+                            limit=page_size, page=page)
+        total = self.sg.summarize(
+            "Task", filters, [{"field": "id", "type": "count"}])
+        return rows, total["summaries"]["id"]
+
+    def task(self, task_id, fields):
+        return self.sg.find_one("Task", [["id", "is", task_id]], fields)
+
+    def update_task(self, task_id, data, expected_updated_at, fields, note=""):
+        """update_project for a Task, plus Flow's status note.
+
+        The note goes in before the write, as on the desktop: the SG daemon
+        mails the leads on the status change and attaches the task's newest
+        note. It is signed with self.login, so a shared client must be copied
+        per caller (copy.copy) rather than have its login changed.
+        """
+        return self._guarded_update(
+            "Task", task_id, data, expected_updated_at, fields,
+            config.TASK_EDITABLE_FIELDS,
+            lambda before: self._status_note(note, data, before["project"],
+                                             None, before))
+
+    def version(self, version_id, fields):
+        return self.sg.find_one("Version", [["id", "is", version_id]], fields)
+
+    def update_version(self, version_id, data, expected_updated_at, fields,
+                       note=""):
+        """A review: config.VERSION_EDITABLE_FIELDS, with the reviewer's note
+        posted on the Version first. `fields` must include project, entity
+        and sg_task, which the note links to."""
+        def note_first(before):
+            task = before.get(config.VERSION_TASK_FIELD)
+            self._status_note(note, data, before["project"], before,
+                              dict(task, entity=before.get("entity")) if task
+                              else {"entity": before.get("entity")})
+        return self._guarded_update(
+            "Version", version_id, data, expected_updated_at, fields,
+            config.VERSION_EDITABLE_FIELDS, note_first)
+
+    def note(self, note_id):
+        """One Note with what it is linked to, for an access check."""
+        return self.sg.find_one("Note", [["id", "is", note_id]],
+                                ["note_links", "tasks", "project"])
+
+    def task_counts(self, filters, group_field="sg_status_list"):
+        """{value: count} of the matching tasks, grouped by ShotGrid itself."""
+        result = self.sg.summarize(
+            "Task", filters, [{"field": "id", "type": "count"}],
+            grouping=[{"field": group_field, "type": "exact",
+                       "direction": "asc"}])
+        return {g["group_value"]: g["summaries"]["id"]
+                for g in result.get("groups") or []}
 
     def software_for_project(self, project):
         """Software active + either global (no project links) or linked to this project."""
@@ -825,11 +1006,12 @@ class SGClient:
     TASK_EVENTS = ["Shotgun_Task_New", "Shotgun_Task_Change",
                    "Shotgun_Task_Retirement", "Shotgun_Task_Revival"]
 
-    def task_events_since(self, last_id):
+    def task_events_since(self, last_id, event_types=None):
         """(newest event id, task events after last_id, oldest first).
 
         last_id None only fetches the newest id, as the starting point: what
         happened before Flow opened is already in the list it loaded.
+        event_types widens it past TASK_EVENTS (FLOW_PROXY adds Project ones).
         """
         newest = [{"field_name": "id", "direction": "desc"}]
         if last_id is None:
@@ -838,7 +1020,7 @@ class SGClient:
         events = self.sg.find(
             "EventLogEntry",
             [["id", "greater_than", last_id],
-             ["event_type", "in", self.TASK_EVENTS]],
+             ["event_type", "in", list(event_types or self.TASK_EVENTS)]],
             ["entity", "attribute_name", "event_type", "meta"],
             order=[{"field_name": "id", "direction": "asc"}], limit=500)
         return (events[-1]["id"] if events else last_id), events
