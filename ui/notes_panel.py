@@ -201,6 +201,7 @@ class NotesPanel(QWidget):
             self._placeholder("Select a version to see its notes")
             return
         self.title.setText(f"Notes & Activity — {version.get('code') or ''}")
+        self._cooldown.stop()           # another version is not a re-read
         self.refresh()
 
     def refresh(self):

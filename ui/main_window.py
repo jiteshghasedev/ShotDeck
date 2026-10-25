@@ -342,15 +342,8 @@ class MainWindow(QMainWindow):
                 f"{newer.get('code') or 'This version'} is the first version "
                 f"on its task — there is nothing before it to compare with.")
             return
-        # Both playable: RV's own wipe, at full resolution and in the project's
-        # colour space. The dialog is the fallback for media RV cannot reach.
-        if rv_player.playable(newer) and rv_player.playable(older):
-            try:
-                rv_player.open_versions([newer, older], mode="wipe",
-                                        project=self.project)
-                return
-            except Exception as e:
-                log.error("could not open RV: %s", e)
+        # Flow's own player, wiping the two with the notes beside them. RV is
+        # a button inside it for a frame-accurate sign-off.
         VersionCompare(self.sg, self.project, newer, older, parent=self).exec()
 
     def open_latest_version(self, task, version):

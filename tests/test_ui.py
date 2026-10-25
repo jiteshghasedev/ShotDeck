@@ -249,13 +249,37 @@ def _browser(sg):
     return browser
 
 
-def test_comparing_two_playable_versions_wipes_them_in_rv():
-    import rv_player
+def test_comparing_two_versions_opens_flows_player():
+    from ui import version_browser
     sg = fakes.FakeShotgun()
     for i in (1, 2):
         sg.add_version(f"SH010_Comp_v00{i}")
     browser = _browser(sg)
     a, b = browser._versions[0], browser._versions[1]
+    opened = []
+
+    class Recorder:
+        def __init__(self, sg, project, version_a, version_b, **kwargs):
+            opened.append((version_a, version_b))
+
+        def exec(self):
+            return 0
+
+    real = version_browser.VersionCompare
+    version_browser.VersionCompare = Recorder
+    try:
+        browser._compare(a, b)
+        browser._play_in_flow(a)
+    finally:
+        version_browser.VersionCompare = real
+    assert opened == [(a, b), (a, None)]
+
+
+def test_the_player_hands_its_wipe_to_rv():
+    import rv_player
+    from ui.version_compare import WIPE
+    a = _image_version("rv_a")
+    b = _image_version("rv_b", colour="#f87171")
     sent = {}
     playable, open_versions = rv_player.playable, rv_player.open_versions
     rv_player.playable = lambda v: True
@@ -263,7 +287,9 @@ def test_comparing_two_playable_versions_wipes_them_in_rv():
                                sent.update(versions=versions, mode=mode)
                                or (1, "log"))
     try:
-        browser._compare(a, b)
+        dialog = _compare(a, b)
+        dialog.set_mode(WIPE)
+        dialog.rv_btn.click()
     finally:
         rv_player.playable, rv_player.open_versions = playable, open_versions
     assert sent["mode"] == "wipe"
@@ -703,17 +729,87 @@ def test_missing_media_compares_without_crashing():
     dialog = _compare(a, b)
     assert dialog.media_a.error
     ok, why = dialog.image_view.difference_available()
-    assert not ok and "still images" in why
+    assert not ok and "two frames" in why
 
 
-def test_movies_get_the_ab_workflow_rather_than_a_fake_sync():
+def test_movies_play_in_the_compare_view_with_a_transport():
+    from ui.version_compare import WIPE
     mov = os.path.join(TMP, "SH010_comp_v006.mov")
     open(mov, "wb").write(b"\x00" * 1024)
     a = {"id": 1, "code": "v006", "sg_path_to_movie": mov}
     b = {"id": 2, "code": "v005", "sg_path_to_movie": mov}
     dialog = _compare(a, b)
-    assert dialog.stack.currentWidget() is dialog.movie_view
-    assert "A/B" in dialog.movie_note.text()
+    assert len(dialog.players) == 2, "one player per side"
+    assert dialog.transport.isVisible()
+    assert dialog.image_view.mode == WIPE, "a compare opens on the wipe"
+    dialog.close()
+    assert not dialog.players
+
+
+def test_a_version_not_on_this_machine_streams_the_shotgrid_upload():
+    from ui.version_compare import VersionMedia
+    media = VersionMedia({"id": 1, "code": "v006", "sg_uploaded_movie": {
+        "url": "https://sg.example/v006.mov?sig=1", "name": "v006.mov"}})
+    assert media.movie == "https://sg.example/v006.mov?sig=1"
+    assert media.source == media.STREAM
+
+
+def test_an_expired_stream_link_is_fetched_again_once():
+    from ui.version_compare import VersionMedia
+    sg = fakes.FakeShotgun()
+    row = sg.add_version("SH010_Comp_v006", sg_uploaded_movie={
+        "url": "https://sg.example/fresh.mov", "name": "v006.mov"})
+    dialog = _compare(_image_version("relink_a"), _image_version("relink_b"),
+                      sg)
+    media = VersionMedia(dict(row, sg_uploaded_movie={
+        "url": "https://sg.example/expired.mov"}))
+
+    class StubPlayer:
+        sources = []
+        def setSource(self, url): self.sources.append(url.toString())
+        def play(self): pass
+
+    player = StubPlayer()
+    dialog.players.append(player)
+    dialog._movie_error(media, player, "403 Forbidden")
+    settle()
+    assert player.sources == ["https://sg.example/fresh.mov"]
+    dialog._movie_error(media, player, "403 Forbidden")
+    assert "403" in media.error, "a second failure is believed"
+    dialog.players.remove(player)
+
+
+def test_a_single_version_plays_without_the_compare_modes():
+    dialog = _compare(_image_version("solo_v001"), None)
+    assert dialog.windowTitle() == "Version Player"
+    assert not any(b.isVisible() for b in dialog.mode_buttons.buttons())
+    assert not dialog.notes_switch.isVisible()
+    assert _labels(dialog).count("solo_v001") >= 1
+
+
+def test_dragging_on_the_picture_moves_the_wipe():
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    from ui.version_compare import WIPE
+    dialog = _compare(_image_version("drag_a"), _image_version("drag_b"))
+    dialog.set_mode(WIPE)
+    view = dialog.image_view
+    view.resize(600, 300)
+    QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(150, 150))
+    assert abs(view.wipe - 0.25) < 0.01
+    assert dialog.wipe_slider.value() == 25
+
+
+def test_full_screen_keeps_the_picture_and_the_notes():
+    dialog = _compare(_image_version("full_a"), _image_version("full_b"))
+    dialog.toggle_fullscreen()
+    settle(200)
+    assert dialog.isFullScreen()
+    assert not dialog.meta_host.isVisible()
+    assert dialog.notes_panel.isVisible()
+    dialog.toggle_fullscreen()
+    settle(200)
+    assert dialog.meta_host.isVisible()
 
 
 def test_notes_are_visible_while_comparing():
@@ -724,11 +820,13 @@ def test_notes_are_visible_while_comparing():
     sg.add_note(b["id"], "Previous client feedback.", user=fakes.PRODUCER)
 
     dialog = _compare(a, b, sg)
+    assert "Reduce brightness." in _labels(dialog)
+    # Switching sides straight away still loads them: no refresh cooldown.
+    dialog.notes_buttons[1].click()
+    settle()
     text = _labels(dialog)
-    assert "Reduce brightness." in text
     assert "Previous client feedback." in text
-    # Each note says which version it belongs to.
-    assert "SH010_Comp_v006" in text and "SH010_Comp_v005" in text
+    assert "SH010_Comp_v005" in dialog.notes_panel.title.text()
 
 
 def test_compare_metadata_marks_what_differs():
@@ -795,8 +893,9 @@ def test_side_by_side_paints_both_versions():
 
     image = QImage(view.size(), QImage.Format_RGB32)
     view.render(image)
-    left = image.pixelColor(150, 150)
-    right = image.pixelColor(450, 150)
+    # The layout may widen the view past the resize; sample each half.
+    left = image.pixelColor(view.width() // 4, 150)
+    right = image.pixelColor(view.width() * 3 // 4, 150)
     assert left != right, "the two sides should not be painting the same thing"
     assert QColor("#3d9dff") in (left,) or left.blue() > left.red()
     assert right.red() > right.blue()
