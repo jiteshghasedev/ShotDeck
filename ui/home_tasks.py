@@ -28,7 +28,7 @@ import re
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QHBoxLayout, QHeaderView,
+    QAbstractItemView, QButtonGroup, QComboBox, QHBoxLayout,
     QLabel, QMenu, QPushButton, QStackedWidget, QTableWidget,
     QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
@@ -39,7 +39,8 @@ from . import theme, ui_state
 from .branding import LoadingPage
 from .software_page import TaskMenu
 from .widgets import (
-    DueDate, EmptyState, StatusPill, flash_refreshed, load_thumbnail,
+    DueDate, EmptyState, StatusPill, flash_refreshed, load_thumbnail, names,
+    resizable,
 )
 
 ALL = "all"
@@ -107,14 +108,15 @@ def due_label(task, today=None):
 
 
 class HomeTasks(TaskMenu, QWidget):
-    COLS = ["Task", "Shot / Asset", "Project", "Step", "Artist", "Status",
-            "Start", "Due", "Notes", ""]
+    COLS = ["Task", "Shot / Asset", "Project", "Step", "Artist", "Reviewer",
+            "Status", "Start", "Due", "Notes", ""]
     COL_ARTIST = 4
-    COL_STATUS = 5
-    COL_START = 6
-    COL_DUE = 7
-    COL_NOTES = 8
-    COL_LAUNCH = 9
+    COL_REVIEWER = 5
+    COL_STATUS = 6
+    COL_START = 7
+    COL_DUE = 8
+    COL_NOTES = 9
+    COL_LAUNCH = 10
 
     task_opened = Signal(object)          # the Task dict
     notes_requested = Signal(object)      # the Task dict, from the Notes cell
@@ -194,7 +196,7 @@ class HomeTasks(TaskMenu, QWidget):
         self._status_chip_at = chips.count()
         chips.addStretch()
         hint = QLabel("Double-click to open · right-click for more · "
-                      "click Notes to chat")
+                      "click Notes to chat · Ctrl+scroll for row height")
         hint.setObjectName("tileSub")
         chips.addWidget(hint)
         lay.addLayout(chips)
@@ -205,20 +207,14 @@ class HomeTasks(TaskMenu, QWidget):
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in (1, 2, 3, self.COL_ARTIST):
-            header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
-        for c, width in ((self.COL_STATUS, 150), (self.COL_START, 110),
-                         (self.COL_DUE, 110),
-                         (self.COL_NOTES, 140), (self.COL_LAUNCH, 150)):
-            header.setSectionResizeMode(c, QHeaderView.Fixed)
-            header.resizeSection(c, width)
         header.setHighlightSections(False)
         header.setSortIndicatorShown(True)
         header.setSortIndicator(*self._sort)
         header.sectionClicked.connect(self._on_header_clicked)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(38)
+        resizable(self.table, "home_tasks_table",
+                  [280, 130, 130, 100, 140, 140, 150, 110, 110, 140, 150])
         self.table.setIconSize(QSize(56, 32))
         self.table.setShowGrid(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -480,6 +476,7 @@ class HomeTasks(TaskMenu, QWidget):
             (task.get("project") or {}).get("name", ""),
             (task.get("step") or {}).get("name", ""),
             self._artist(task),
+            names(task.get(config.TASK_LEAD_FIELD)),
         ]
 
     def _rebuild(self):
@@ -498,7 +495,7 @@ class HomeTasks(TaskMenu, QWidget):
         for r, t in enumerate(self._rows):
             for c, v in enumerate(self._values(t)):
                 item = QTableWidgetItem(str(v))
-                if c in (2, 3, self.COL_ARTIST):
+                if c in (2, 3, self.COL_ARTIST, self.COL_REVIEWER):
                     item.setForeground(QColor(theme.TEXT_DIM))
                 self.table.setItem(r, c, item)
             self._load_thumbnail(r, t)

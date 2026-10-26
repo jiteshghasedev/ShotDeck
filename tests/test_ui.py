@@ -9,7 +9,7 @@ building and the dialogs are driven directly instead.
 import os
 import tempfile
 
-from PySide6.QtCore import QThreadPool, QMimeData, QUrl, QPointF, Qt
+from PySide6.QtCore import QThreadPool, QMimeData, QUrl, QPointF, Qt, QTimer
 from PySide6.QtGui import QPixmap, QColor, QDropEvent, QDragEnterEvent
 from PySide6.QtWidgets import QApplication, QFrame, QMenu
 from PySide6.QtWidgets import QLabel as QLabelType
@@ -1730,6 +1730,37 @@ def test_leads_see_the_tasks_that_name_them_as_reviewer():
     assert home.heading.text() == "Tasks To Review"
     assert home.table.rowCount() == 1
     assert not home.table.isColumnHidden(home.COL_ARTIST), "whose work it is"
+
+
+def test_artists_see_their_reviewers_and_keep_their_column_sizes():
+    from ui import ui_state
+    from ui.home_tasks import HomeTasks
+    from ui.software_page import TasksTable
+    sg = fakes.FakeShotgun()
+    fakes.add_task(sg, "Comp")[config.TASK_LEAD_FIELD] = [
+        {"type": "HumanUser", "id": 77, "name": "Priya"},
+        {"type": "Group", "id": 5, "name": "Leads"}]
+    tasks = fakes.client(sg).open_tasks()
+    assert tasks[0][config.TASK_LEAD_FIELD], "reviewers fetched for Mine"
+
+    home = HomeTasks()
+    home.set_tasks(tasks)
+    assert not home.table.isColumnHidden(home.COL_REVIEWER)
+    assert home.table.item(0, home.COL_REVIEWER).text() == "Priya, Leads"
+    project = TasksTable()
+    project.set_tasks(tasks)
+    assert project.table.item(0, project.COL_REVIEWER).text() == \
+        "Priya, Leads"
+
+    ui_state.put("home_tasks_table", {})
+    home = HomeTasks()
+    home.table.horizontalHeader().resizeSection(0, 333)
+    home.table.verticalHeader().setDefaultSectionSize(60)
+    home.table.findChild(QTimer).timeout.emit()      # the debounced save
+    again = HomeTasks()
+    assert again.table.horizontalHeader().sectionSize(0) == 333
+    assert again.table.verticalHeader().defaultSectionSize() == 60
+    ui_state.put("home_tasks_table", {})
 
 
 def test_production_sees_every_artists_open_tasks_on_active_shows():

@@ -5,6 +5,7 @@ import shiboken6
 
 from PySide6.QtCore import (
     Qt, QSize, Signal, QThreadPool, QRunnable, QObject, QRectF, QTimer,
+    QEvent,
 )
 from PySide6.QtGui import (
     QPixmap, QPainter, QColor, QLinearGradient, QBrush, QFont, QPainterPath,
@@ -12,12 +13,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QFrame, QLabel, QVBoxLayout, QHBoxLayout, QSizePolicy, QWidget,
-    QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle,
+    QGraphicsDropShadowEffect, QStyledItemDelegate, QStyle, QHeaderView,
 )
 
 import config
 
-from . import theme
+from . import theme, ui_state
 
 _pool = QThreadPool.globalInstance()
 
@@ -102,6 +103,75 @@ def flash_refreshed(button, seconds=6):
             lambda: button.setText(button._resting_text))
     button.setText("✓ Refreshed " + datetime.datetime.now().strftime("%H:%M"))
     button._flash.start(seconds * 1000)
+
+
+def names(value):
+    """"Priya, Sam" from a ShotGrid entity, a multi-entity list, or text."""
+    if isinstance(value, dict):
+        value = [value]
+    if isinstance(value, list):
+        return ", ".join(v.get("name") or "" for v in value if v)
+    return value or ""
+
+
+ROW_HEIGHTS = (28, 120)          # Ctrl+wheel stays inside this range
+
+
+class _RowZoom(QObject):
+    """Ctrl+wheel over a table makes its rows taller or shorter."""
+
+    def __init__(self, table, changed):
+        super().__init__(table)
+        self._table = table
+        self._changed = changed
+
+    def eventFilter(self, obj, event):
+        if event.type() != QEvent.Wheel or \
+                not event.modifiers() & Qt.ControlModifier:
+            return False
+        rows = self._table.verticalHeader()
+        step = 4 if event.angleDelta().y() > 0 else -4
+        rows.setDefaultSectionSize(
+            max(ROW_HEIGHTS[0], min(ROW_HEIGHTS[1],
+                                    rows.defaultSectionSize() + step)))
+        self._changed()
+        return True
+
+
+def resizable(table, key, widths):
+    """Let the artist drag column edges and Ctrl+wheel the row height.
+
+    Both are kept per user under ui_state[key]. widths: each column's
+    default width, used until the artist drags it. Columns are remembered by
+    header label, so adding a column keeps the others as they were.
+    """
+    header = table.horizontalHeader()
+    labels = [table.horizontalHeaderItem(c).text() or f"#{c}"
+              for c in range(table.columnCount())]
+    saved = ui_state.get(key) or {}
+    cols = dict(saved.get("cols") or {})
+    header.setSectionResizeMode(QHeaderView.Interactive)
+    header.setMinimumSectionSize(40)
+    for c, label in enumerate(labels):
+        header.resizeSection(c, cols.get(label, widths[c]))
+    if saved.get("rows"):
+        table.verticalHeader().setDefaultSectionSize(saved["rows"])
+
+    # A drag fires a resize per pixel: write the file once it settles.
+    timer = QTimer(table)
+    timer.setSingleShot(True)
+    timer.setInterval(400)
+
+    def save():
+        for c, label in enumerate(labels):
+            if not table.isColumnHidden(c):
+                cols[label] = header.sectionSize(c)
+        ui_state.put(key, {"cols": cols,
+                           "rows": table.verticalHeader().defaultSectionSize()})
+
+    timer.timeout.connect(save)
+    header.sectionResized.connect(lambda *_: timer.start())
+    table.viewport().installEventFilter(_RowZoom(table, timer.start))
 
 
 def rounded(pixmap, size, radius):

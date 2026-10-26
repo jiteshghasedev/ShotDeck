@@ -1037,16 +1037,14 @@ class SGClient:
 
     def _my_tasks(self, project=None, statuses=None, exclude_statuses=None,
                   scope=MINE):
-        fields = config.TASK_FIELDS
+        # The reviewers too, so the artist sees who signs the task off.
+        fields = config.TASK_FIELDS + [config.TASK_LEAD_FIELD]
         if scope == EVERYONE:
             filters = [] if project else \
                 [["project.Project.sg_status", "is", "Active"]]
         elif scope == REVIEW:
             if not self._owner:
                 return []
-            # Asked for only here: until the site has the field, only this
-            # list fails, not the artist's own.
-            fields = fields + [config.TASK_LEAD_FIELD]
             filters = [[config.TASK_LEAD_FIELD, "is",
                         {"type": self._owner["type"], "id": self._owner["id"]}]]
         elif config.TASK_OWNER_IS_ENTITY:

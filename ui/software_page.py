@@ -2,7 +2,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QGridLayout, QTabWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QLabel, QMenu,
+    QTableWidget, QTableWidgetItem, QLineEdit, QLabel, QMenu,
     QApplication, QStackedWidget, QAbstractItemView,
 )
 
@@ -11,7 +11,7 @@ import paths
 import rez_scan
 from . import theme
 from .branding import LoadingPage
-from .widgets import Tile, EmptyState, StatusPill, DueDate
+from .widgets import Tile, EmptyState, StatusPill, DueDate, names, resizable
 
 TILE_WIDTH = 208
 
@@ -285,12 +285,13 @@ class TaskMenu:
 
 
 class TasksTable(TaskMenu, QWidget):
-    COLS = ["Task", "Link", "Step", "Status", "Latest Version", "Start",
-            "Due"]
-    COL_STATUS = 3
-    COL_LATEST = 4
-    COL_START = 5
-    COL_DUE = 6
+    COLS = ["Task", "Link", "Step", "Reviewer", "Status", "Latest Version",
+            "Start", "Due"]
+    COL_REVIEWER = 3
+    COL_STATUS = 4
+    COL_LATEST = 5
+    COL_START = 6
+    COL_DUE = 7
 
     task_selected = Signal(object)          # the Task dict, or None
     package_launched = Signal(object, str, str)   # task, package, version
@@ -323,7 +324,8 @@ class TasksTable(TaskMenu, QWidget):
         self.search.textChanged.connect(self._rebuild)
         top.addWidget(self.search)
 
-        self.hint = QLabel("Right-click a task to open its folder or launch an app")
+        self.hint = QLabel("Right-click a task to open its folder or launch an "
+                           "app · Ctrl+scroll for row height")
         self.hint.setObjectName("tileSub")
         top.addWidget(self.hint)
         top.addStretch()
@@ -339,20 +341,11 @@ class TasksTable(TaskMenu, QWidget):
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)          # Task
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents) # Link
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Step
-        header.setSectionResizeMode(self.COL_STATUS, QHeaderView.Fixed)
-        header.setSectionResizeMode(self.COL_LATEST, QHeaderView.Fixed)
-        header.setSectionResizeMode(self.COL_START, QHeaderView.Fixed)
-        header.setSectionResizeMode(self.COL_DUE, QHeaderView.Fixed)
-        header.resizeSection(self.COL_STATUS, 110)
-        header.resizeSection(self.COL_LATEST, 150)
-        header.resizeSection(self.COL_START, 110)
-        header.resizeSection(self.COL_DUE, 110)
         header.setHighlightSections(False)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(38)
+        resizable(self.table, "project_tasks_table",
+                  [280, 140, 110, 140, 110, 150, 110, 110])
         self.table.setShowGrid(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -453,6 +446,7 @@ class TasksTable(TaskMenu, QWidget):
                            f"{'  ●' if attention else ''}") if latest else ""
             row_vals = [
                 t.get("content", ""), entity, step,
+                names(t.get(config.TASK_LEAD_FIELD)),
                 t.get("sg_status_list", ""), latest_text,
                 t.get("start_date") or "", t.get("due_date") or "",
             ]
@@ -466,7 +460,7 @@ class TasksTable(TaskMenu, QWidget):
                 item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 if c == 1:                      # the shot or asset name
                     item.setForeground(QColor(theme.TEXT))
-                elif c in (2, self.COL_START):
+                elif c in (2, self.COL_REVIEWER, self.COL_START):
                     item.setForeground(QColor(theme.TEXT_DIM))
                 elif c == self.COL_LATEST:
                     item.setForeground(QColor(
