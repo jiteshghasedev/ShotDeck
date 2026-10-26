@@ -233,6 +233,8 @@ NOTES_MIN_REFRESH_SECONDS = 5
 # field of HumanUsers (and Groups). Their "To Review" list is the tasks that
 # name them there.
 TASK_LEAD_FIELD = os.environ.get("FLOW_TASK_LEAD_FIELD", "task_reviewers")
+# The web page sets reviewers too (leads and up)
+TASK_EDITABLE_FIELDS.append(TASK_LEAD_FIELD)
 # Setting a task to this status in Flow asks the artist for a note and mails
 # the task's leads (status_mail.py), through the pipeline's mailer.
 REVIEW_MAIL_STATUS = os.environ.get("FLOW_REVIEW_MAIL_STATUS", "prw")
