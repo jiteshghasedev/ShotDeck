@@ -43,12 +43,27 @@ def test_a_movie_counts_and_no_plates_is_none():
     assert plates.find_movie(root)["path"].endswith("/ref/plate.mov")
 
 
+def test_the_studio_plate_layout_finds_the_sequence_and_its_movie():
+    root = tempfile.mkdtemp()
+    folder = "AD1060_CP01_V01/v001/"
+    for f in range(1009, 1016):
+        _touch(root, folder + f"UAT6_AD1008_v001.{f}.exr", 100)
+    _touch(root, folder + "UAT6_AD1008_v001.mov", 200)
+    base = root.replace("\\", "/") + "/" + folder
+    assert plates.find_plate(root) == {
+        "path": base + "UAT6_AD1008_v001.%04d.exr", "first": 1009,
+        "last": 1015}
+    assert plates.find_movie(root)["path"] == base + "UAT6_AD1008_v001.mov"
+
+
 def test_the_write_path_follows_the_script_name():
     class Ctx:
         entity_root = "/jobs/uat6/sequences/SEQ001/shots/AD1030"
     path = plates.write_path(Ctx())
     assert path.startswith(Ctx.entity_root + "/nuke/renders/")
     assert path.endswith(".%04d.exr") and "[value root.name]" in path
+    named = plates.write_path(Ctx(), "/work/sh_comp_v0002.nk")
+    assert named == Ctx.entity_root +         "/nuke/renders/sh_comp_v0002/sh_comp_v0002.%04d.exr"
     Ctx.entity_root = ""
     assert plates.write_path(Ctx()) is None
 
@@ -102,14 +117,18 @@ def _fake_nuke(made):
     def maker(cls):
         def make(**kw):
             node = _Node(**kw)
-            node.Class = cls
+            node.Class = lambda: cls
             made.append(node)
             return node
         return make
     nuke.nodes = types.SimpleNamespace(Read=maker("Read"), Write=maker("Write"))
     nuke.message = lambda text: None
     nuke.saved = []
-    nuke.scriptSaveAs = lambda path, overwrite=0: nuke.saved.append(path)
+
+    def save_as(path, overwrite=0):
+        nuke.saved.append(path)
+        root.name = lambda: path
+    nuke.scriptSaveAs = save_as
     return nuke, root
 
 
@@ -130,21 +149,29 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
     saved_env = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
     sys.modules["nuke"] = fake
+    kept = []
+    real_keep_open, adapter._keep_open = adapter._keep_open, kept.append
     try:
         adapter.setup_empty_script()
         read, movie, write = made
-        assert read.Class == "Read" and read["file"].value().endswith(
+        assert read.Class() == "Read" and read["file"].value().endswith(
             "/elements/plates/bg/bg.%04d.exr")
-        assert movie.Class == "Read" and movie["file"].value().endswith(
+        assert movie.Class() == "Read" and movie["file"].value().endswith(
             "/elements/plates/bg/bg.mov")
         work = env["FLOW_ENTITY_ROOT"] + "/nuke/comp/scene/"
-        assert fake.saved == [work + "uat6_SEQ001_AD1030_comp_jitesh_v0001.nk"]
+        script = work + "uat6_SEQ001_AD1030_comp_jitesh_v0001.nk"
+        assert fake.saved == [script, script]   # named, then with the nodes
+        assert kept == [script]                 # watched while Nuke starts
         assert (read["first"].value(), read["last"].value()) == (1001, 1050)
         assert (root["first_frame"].value(), root["last_frame"].value()) == \
             (1001, 1050)
         assert write.inputs == [read]
-        assert write["file"].value().startswith(env["FLOW_ENTITY_ROOT"] +
-                                                "/nuke/renders/")
+        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/uat6_SEQ001_AD1030_comp_jitesh_v0001/"             "uat6_SEQ001_AD1030_comp_jitesh_v0001.%04d.exr"
+
+        fake.allNodes = lambda *a: [write]          # Version Up re-points it
+        adapter.save_scene(work + "uat6_SEQ001_AD1030_comp_jitesh_v0002.nk")
+        assert "/uat6_SEQ001_AD1030_comp_jitesh_v0002/" in write["file"].value()
+        fake.saved.pop()
 
         existing = list(made)
         fake.allNodes = lambda *a: existing
@@ -153,15 +180,17 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert made == []
 
         fake.allNodes = lambda *a: []
+        root.name = lambda: "Root"                  # a fresh, untitled Nuke
         open(fake.saved[0], "w").close()
         picked = []
         adapter.pick_file = lambda files: picked.append(files) and None
         adapter._flow_started = False
         adapter.setup_empty_script()      # the task already has a work file
-        assert made == [] and len(fake.saved) == 1
+        assert made == [] and len(fake.saved) == 2
         assert [f["version"] for f in picked[0]] == [1]
     finally:
         adapter.__dict__.pop("pick_file", None)
+        adapter._keep_open = real_keep_open    # its timers outlive the fake
         adapter._flow_started = False
         del sys.modules["nuke"]
         for k, v in saved_env.items():

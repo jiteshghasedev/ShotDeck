@@ -4,10 +4,15 @@ The `nuke` module is imported inside the functions so this file can be read,
 imported and tested outside Nuke.
 """
 
+import logging
+import os
 import sys
 
 from . import MENU_NAME, actions, common
 from .. import context, lock, paths, plates, publish
+
+# Nuke shows the logger in its terminal; a bare sys.stdout.write may not.
+log = logging.getLogger("flow")
 
 
 def _nuke():
@@ -31,9 +36,15 @@ def install():
     menu.addSeparator()
     menu.addCommand("Load Plate + Write", setup_shot)
     nuke.addOnScriptLoad(_on_load)
-    nuke.addOnScriptSave(lambda: common.opening(module, current_scene()))
+    nuke.addOnScriptSave(_on_save)
     _after_startup(setup_empty_script)
     return True
+
+
+def _on_save():
+    """Nuke's own Save As: render where the new name says, and lock it."""
+    _retarget_writes(current_scene())
+    common.opening(sys.modules[__name__], current_scene())
 
 
 def _on_load():
@@ -68,8 +79,7 @@ def setup_empty_script():
     A task that already has work files gets the Load File window instead,
     and so does an asset task, which has no plate -- see common.start().
     """
-    nuke = _nuke()
-    if current_scene() or nuke.allNodes():
+    if current_scene() or _has_nodes():
         return
     ctx = context.get()
     module = sys.modules[__name__]
@@ -78,11 +88,44 @@ def setup_empty_script():
         return common.start(module)
     module._flow_started = True
     try:
+        # Saved first, so the Write is named after the real script.
+        path = publish.save_next_version(module, ctx)
         setup_shot(quiet=True)
-        path = publish.save_next_version(sys.modules[__name__], ctx)
-        sys.stdout.write("Flow: created {0}\n".format(path))
+        save_scene(path)
+        log.info("created %s", path)
+        _keep_open(path)
     except Exception as e:                       # never cost the artist Nuke
-        sys.stdout.write("Flow: shot setup skipped: {0}\n".format(e))
+        log.warning("shot setup skipped: %s", e)
+
+
+def _keep_open(path, delays=(1000, 3000, 6000, 10000)):
+    """Reopen path if Nuke drops it while it is still starting up.
+
+    Nuke 16 can finish its own startup after the first Qt tick and reset the
+    live script to a new, untitled one; the saved file is fine, so open it.
+
+    shortcut: polls for 10s; hook Nuke's own startup-finished signal instead
+    if one turns up.
+    """
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        from PySide2.QtCore import QTimer
+
+    def check():
+        if not current_scene() and not _has_nodes() and \
+                os.path.isfile(path):
+            log.warning("Nuke reset the new script at startup; reopening %s",
+                        path)
+            _nuke().scriptOpen(path)
+
+    for delay in delays:
+        QTimer.singleShot(delay, check)
+
+
+def _has_nodes():
+    """Anything but the Viewer a fresh GUI session starts with."""
+    return any(n.Class() != "Viewer" for n in _nuke().allNodes())
 
 
 def setup_shot(quiet=False):
@@ -103,7 +146,10 @@ def setup_shot(quiet=False):
             root["first_frame"].setValue(plate["first"])
             root["last_frame"].setValue(plate["last"])
         nuke.root()["format"].setValue(read["format"].value())
-    elif not quiet:
+        log.info("plate %s", plate["path"])
+    elif quiet:
+        log.warning("no plate (image sequence or movie) under %s", folder)
+    else:
         message("No plate found under {0}".format(folder))
 
     movie = plates.find_movie(folder)
@@ -111,8 +157,9 @@ def setup_shot(quiet=False):
         mov = nuke.nodes.Read(file=movie["path"])
         if read:
             mov.setXYpos(read.xpos() + 150, read.ypos())
+        log.info("movie %s", movie["path"])
 
-    path = plates.write_path(ctx)
+    path = plates.write_path(ctx, current_scene())
     if not path:
         return read
     write = nuke.nodes.Write(inputs=[read] if read else [])
@@ -126,8 +173,22 @@ def setup_shot(quiet=False):
 
 
 def save_scene(path):
+    _retarget_writes(path)
     _nuke().scriptSaveAs(path, overwrite=1)
     return path
+
+
+def _retarget_writes(script):
+    """Point Writes that render into the render folder at script's own
+    subfolder, so Version Up renders v0002 beside v0001, not over it."""
+    folder = plates.renders_dir()
+    if not folder or not script:
+        return
+    target = plates.write_path(script=script)
+    for node in _nuke().allNodes("Write"):
+        current = node["file"].value() or ""
+        if os.path.dirname(os.path.dirname(current)) == folder:
+            node["file"].setValue(target)
 
 
 def open_scene(path):

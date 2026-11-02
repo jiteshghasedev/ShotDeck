@@ -91,14 +91,18 @@ def _scan(root):
     return list(found.values())
 
 
-def write_path(ctx=None):
+def write_path(ctx=None, script=None):
     """Nuke Write path under the render folder, named after the script.
 
-    A TCL expression rather than a fixed version, so Version Up renders into
-    a new folder without anyone touching the Write node.
+    A plain path an artist can read; the Nuke adapter re-points it when the
+    script is saved under a new version. An unsaved script has no name yet,
+    so it gets the TCL expression that resolves to one at render time.
     """
     folder = renders_dir(ctx)
     if not folder:
         return None
-    name = "[file rootname [file tail [value root.name]]]"
+    if script:
+        name = os.path.splitext(os.path.basename(script))[0]
+    else:
+        name = "[file rootname [file tail [value root.name]]]"
     return "{0}/{1}/{1}.%04d.exr".format(folder, name)
