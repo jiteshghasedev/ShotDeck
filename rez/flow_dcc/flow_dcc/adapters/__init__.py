@@ -21,6 +21,7 @@ they build menus rather than in what is on them.
 # Submit -- sit in a band of their own between the two, so neither is hit by
 # accident on the way to Save.
 ACTIONS = [
+    ("Load File...", "action_load_file"),
     ("Save", "action_save"),
     ("Save As...", "action_save_as"),
     ("Version Up", "action_version_up"),

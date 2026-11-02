@@ -46,6 +46,14 @@ def install():
         action.triggered.connect(_callback(getattr(module, attr)))
         painter.ui.add_action(painter.ui.ApplicationMenu.File, action)
         _added.append(action)
+
+    # Painter cannot make an empty project (it needs a mesh), so on a task with
+    # no files common.start() logs that save_scene() refused and stops there.
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        from PySide2.QtCore import QTimer
+    QTimer.singleShot(0, lambda: common.start(module))
     return True
 
 
@@ -66,6 +74,17 @@ def save_scene(path):
     if not painter.project.is_open():
         raise RuntimeError("No Substance Painter project is open.")
     painter.project.save_as(path, painter.project.ProjectSaveMode.Full)
+    return path
+
+
+def open_scene(path):
+    painter = _painter()
+    if painter.project.is_open():
+        if painter.project.needs_saving() and not common.discard_ok(
+                sys.modules[__name__], path):
+            return None
+        painter.project.close()
+    painter.project.open(path)
     return path
 
 

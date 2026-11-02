@@ -27,8 +27,9 @@ is allowed to do.
 
 import os
 import shutil
+import sys
 
-from . import context, paths, shotgrid, versioning
+from . import context, lock, paths, shotgrid, versioning
 
 
 class PublishError(RuntimeError):
@@ -156,6 +157,7 @@ def publish(adapter, ctx=None, description=""):
         raise PublishError(
             "{0} reported a successful save but there is no file at\n{1}"
             .format(ctx.software or "The DCC", work_path))
+    hold(work_path)
 
     version = versioning.version_in(work_path)
     if version is None:
@@ -218,7 +220,21 @@ def save_next_version(adapter, ctx=None):
     ctx = ctx or context.get()
     path = versioning.next_scene_path(ctx, create_dir=True)
     adapter.save_scene(path)
+    hold(path)
     return path
+
+
+def hold(path):
+    """This session now works in path, a file Flow just saved: lock it.
+
+    The file is new, so nobody else can have it; a lock that cannot be
+    written is never worth failing a save that already happened.
+    """
+    try:
+        lock.take(path)
+        lock.keep_only(path)
+    except Exception as e:
+        sys.stdout.write("Flow: could not lock {0}: {1}\n".format(path, e))
 
 
 def describe_target(ctx=None):

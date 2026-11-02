@@ -36,6 +36,11 @@ def test_a_movie_counts_and_no_plates_is_none():
     _touch(root, "ref/plate.mov", 50)
     assert plates.find_plate(root)["path"].endswith("/ref/plate.mov")
     assert plates.find_plate(root)["first"] is None
+    assert plates.find_movie(root)["path"].endswith("/ref/plate.mov")
+
+    _touch(root, "bg/bg.1001.exr", 10)        # older than the movie
+    assert plates.find_plate(root)["path"].endswith("/bg/bg.%04d.exr")
+    assert plates.find_movie(root)["path"].endswith("/ref/plate.mov")
 
 
 def test_the_write_path_follows_the_script_name():
@@ -103,27 +108,37 @@ def _fake_nuke(made):
         return make
     nuke.nodes = types.SimpleNamespace(Read=maker("Read"), Write=maker("Write"))
     nuke.message = lambda text: None
+    nuke.saved = []
+    nuke.scriptSaveAs = lambda path, overwrite=0: nuke.saved.append(path)
     return nuke, root
 
 
-def test_an_empty_shot_script_gets_the_plate_and_a_write():
+def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
     from flow_dcc.adapters import nuke as adapter
     shot = tempfile.mkdtemp()
     for f in (1001, 1050):
         _touch(shot, f"elements/plates/bg/bg.{f}.exr", 10)
+    _touch(shot, "elements/plates/bg/bg.mov", 10)
 
     made = []
     fake, root = _fake_nuke(made)
     env = {"FLOW_ENTITY_ROOT": shot.replace("\\", "/"),
-           "FLOW_ENTITY_TYPE": "Shot"}
+           "FLOW_ENTITY_TYPE": "Shot", "FLOW_ENTITY_NAME": "AD1030",
+           "FLOW_TASK_ID": "42", "FLOW_STEP": "Comp",
+           "FLOW_SOFTWARE": "nuke", "FLOW_USER": "jitesh",
+           "FLOW_PROJECT_CODE": "UAT6", "FLOW_SEQUENCE": "SEQ001"}
     saved_env = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
     sys.modules["nuke"] = fake
     try:
         adapter.setup_empty_script()
-        read, write = made
+        read, movie, write = made
         assert read.Class == "Read" and read["file"].value().endswith(
             "/elements/plates/bg/bg.%04d.exr")
+        assert movie.Class == "Read" and movie["file"].value().endswith(
+            "/elements/plates/bg/bg.mov")
+        work = env["FLOW_ENTITY_ROOT"] + "/nuke/comp/scene/"
+        assert fake.saved == [work + "uat6_SEQ001_AD1030_comp_jitesh_v0001.nk"]
         assert (read["first"].value(), read["last"].value()) == (1001, 1050)
         assert (root["first_frame"].value(), root["last_frame"].value()) == \
             (1001, 1050)
@@ -136,7 +151,18 @@ def test_an_empty_shot_script_gets_the_plate_and_a_write():
         made.clear()
         adapter.setup_empty_script()      # the script is no longer empty
         assert made == []
+
+        fake.allNodes = lambda *a: []
+        open(fake.saved[0], "w").close()
+        picked = []
+        adapter.pick_file = lambda files: picked.append(files) and None
+        adapter._flow_started = False
+        adapter.setup_empty_script()      # the task already has a work file
+        assert made == [] and len(fake.saved) == 1
+        assert [f["version"] for f in picked[0]] == [1]
     finally:
+        adapter.__dict__.pop("pick_file", None)
+        adapter._flow_started = False
         del sys.modules["nuke"]
         for k, v in saved_env.items():
             if v is None:

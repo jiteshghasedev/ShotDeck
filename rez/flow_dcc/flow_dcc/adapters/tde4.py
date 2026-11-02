@@ -50,6 +50,15 @@ def save_scene(path):
     return path
 
 
+def open_scene(path):
+    """No unsaved-changes flag is relied on here, so 3DE always asks."""
+    if not common.discard_ok(sys.modules[__name__], path):
+        return None
+    if not _tde4().loadProject(path):
+        raise RuntimeError("3DEqualizer refused to open {0}".format(path))
+    return path
+
+
 def current_scene():
     return _tde4().getProjectPath() or ""
 

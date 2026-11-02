@@ -178,14 +178,24 @@ def scene_stem(ctx=None):
     it is not.
     """
     ctx = ctx or context.get()
-    bits = [
+    bits = _task_bits(ctx) + [ctx.user or ""]
+    return "_".join(b for b in bits if b) or "untitled"
+
+
+def task_prefix(ctx=None):
+    """`uat6_SEQ001_AD1030_lighting` -- the stem without the artist, shared
+    by every artist's files on this task."""
+    ctx = ctx or context.get()
+    return "_".join(b for b in _task_bits(ctx) if b) or "untitled"
+
+
+def _task_bits(ctx):
+    return [
         (ctx.project_code or "").lower(),
         ctx.sequence or "",
         ctx.entity_name or "",
         (ctx.step or "").lower(),
-        ctx.user or "",
     ]
-    return "_".join(b for b in bits if b) or "untitled"
 
 
 def scene_name(version, ctx=None, ext=None):
@@ -208,8 +218,19 @@ def scene_path(version, ctx=None, ext=None):
 def existing_versions(ctx=None, ext=None):
     """Version numbers already on disk for this task, ascending.
 
-    Matches on the stem so an unrelated scene in a shared folder is not counted
-    as a previous version of this task's work.
+    Counted across every artist on the task, so a version number is used once
+    per task: v0004 is one file, whoever saved it.
+    """
+    return sorted(set(f["version"] for f in task_files(ctx, ext)))
+
+
+def task_files(ctx=None, ext=None):
+    """Every artist's work files for this task, newest version first.
+
+    Each is {"path", "name", "version", "user", "mtime"}. Matches on the task
+    prefix so an unrelated scene in a shared folder is not counted. The user
+    is the artist the file is named after, which is who saved it through Flow;
+    a file without one falls back to its owner on disk.
     """
     folder = work_dir(ctx)
     if not folder or not os.path.isdir(folder):
@@ -218,16 +239,29 @@ def existing_versions(ctx=None, ext=None):
     ctx = ctx or context.get()
     if ext is None:
         ext = extension(ctx)
-    stem = scene_stem(ctx).lower()
+    pattern = re.compile(
+        r"^{0}(?:_(?P<user>.+?))?_v(?P<version>\d+){1}$".format(
+            re.escape(task_prefix(ctx)),
+            re.escape(ext) if ext else r"(?:\.[^.]+)?"),
+        re.IGNORECASE)
 
     found = []
     for name in os.listdir(folder):
-        lowered = name.lower()
-        if not lowered.startswith(stem + "_v"):
+        match = pattern.match(name)
+        if not match:
             continue
-        if ext and not lowered.endswith(ext.lower()):
-            continue
-        match = VERSION_RE.search(lowered)
-        if match:
-            found.append(int(match.group(1)))
-    return sorted(set(found))
+        path = folder + "/" + name
+        found.append({"path": path, "name": name,
+                      "version": int(match.group("version")),
+                      "user": match.group("user") or _owner(path),
+                      "mtime": os.path.getmtime(path)})
+    found.sort(key=lambda f: (f["version"], f["mtime"]), reverse=True)
+    return found
+
+
+def _owner(path):
+    try:
+        import pwd                  # POSIX only; Windows gets no owner
+        return pwd.getpwuid(os.stat(path).st_uid).pw_name
+    except Exception:
+        return ""

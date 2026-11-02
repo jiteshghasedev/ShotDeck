@@ -18,7 +18,7 @@ import os
 import sys
 
 from . import MENU_NAME, actions, common
-from .. import paths, versioning
+from .. import paths, picker, versioning
 
 MENU_ID = "FLOW_MT_menu"
 
@@ -65,7 +65,19 @@ def install():
     bpy.utils.register_class(menu)
     _registered.append(menu)
 
+    for cls in _file_classes(bpy):
+        bpy.utils.register_class(cls)
+        _registered.append(cls)
+
     bpy.types.TOPBAR_MT_editor_menus.append(_draw_top_bar)
+    bpy.app.handlers.load_post.append(_on_load)
+    bpy.app.handlers.save_post.append(_on_save)
+
+    def first_run():
+        common.start(module)
+        return None                         # a timer that returns None ends
+    # startup/ scripts run before a .blend named on the command line loads.
+    bpy.app.timers.register(first_run, first_interval=1.0)
     return True
 
 
@@ -76,6 +88,10 @@ def uninstall():
         bpy.types.TOPBAR_MT_editor_menus.remove(_draw_top_bar)
     except ValueError:
         pass                                # was never installed
+    for handlers, func in ((bpy.app.handlers.load_post, _on_load),
+                           (bpy.app.handlers.save_post, _on_save)):
+        if func in handlers:
+            handlers.remove(func)
     while _registered:
         try:
             bpy.utils.unregister_class(_registered.pop())
@@ -85,6 +101,33 @@ def uninstall():
 
 def _draw_top_bar(self, _context):
     self.layout.menu(MENU_ID)
+
+
+# -- locks: every .blend opened or saved, File menu included ---------------
+# _bpy_persistent keeps a handler registered across file loads, which is what
+# bpy.app.handlers.persistent sets; done by hand so this imports without bpy.
+
+def _on_load(*_args):
+    """Blender cannot cancel a load, so a file someone else has open is
+    replaced by the startup file again."""
+    bpy = _bpy()
+    if common.opening(sys.modules[__name__], bpy.data.filepath):
+        return
+
+    def back_to_startup():
+        from .. import lock
+        bpy.ops.wm.read_homefile()
+        lock.release_all()                  # nothing is open now
+        return None
+    bpy.app.timers.register(back_to_startup, first_interval=0.1)
+
+
+def _on_save(*_args):
+    common.opening(sys.modules[__name__], _bpy().data.filepath)
+
+
+_on_load._bpy_persistent = True
+_on_save._bpy_persistent = True
 
 
 def _operator(bpy, module, label, attr):
@@ -105,6 +148,65 @@ def _operator(bpy, module, label, attr):
 def save_scene(path):
     _bpy().ops.wm.save_as_mainfile(filepath=path)
     return path
+
+
+def open_scene(path):
+    """Refuse over unsaved changes: confirm() cannot ask here, see below."""
+    bpy = _bpy()
+    if bpy.data.is_dirty:
+        message("This file has unsaved changes. Save first, then Load File "
+                "again to open\n{0}".format(path))
+        return None
+    bpy.ops.wm.open_mainfile(filepath=path)
+    return path
+
+
+# -- Load File ------------------------------------------------------------
+#
+# No Qt in Blender, and its popups answer through operators, not return
+# values: pick_file() shows a menu of the task's files and returns None, and
+# the entry the artist clicks calls open_scene() itself.
+
+FILES_MENU_ID = "FLOW_MT_files"
+_choices = []                               # (label, path) for the menu
+
+
+def pick_file(files):
+    bpy = _bpy()
+    _choices[:] = [(picker.label(row), f["path"])
+                   for row, f in zip(picker.rows(files), files)]
+    wm = bpy.context.window_manager
+    window = bpy.context.window or (wm.windows[0] if wm.windows else None)
+    if window is None:
+        return None                         # no UI to show it in
+    with bpy.context.temp_override(window=window):
+        bpy.ops.wm.call_menu(name=FILES_MENU_ID)
+    return None
+
+
+def _file_classes(bpy):
+    def execute(self, _context):
+        common.open_path(sys.modules[__name__], self.filepath)
+        return {"FINISHED"}
+
+    opener = type("FLOW_OT_open_work_file", (bpy.types.Operator,), {
+        "bl_idname": "flow.open_work_file",
+        "bl_label": "Open Work File",
+        "__annotations__": {"filepath": bpy.props.StringProperty()},
+        "execute": execute,
+    })
+
+    def draw(self, _context):
+        self.layout.label(text="Version   Artist   Saved")
+        for text, path in _choices:
+            self.layout.operator(opener.bl_idname, text=text).filepath = path
+
+    menu = type("FLOW_MT_files", (bpy.types.Menu,), {
+        "bl_idname": FILES_MENU_ID,
+        "bl_label": "Flow: Load File",
+        "draw": draw,
+    })
+    return opener, menu
 
 
 def current_scene():

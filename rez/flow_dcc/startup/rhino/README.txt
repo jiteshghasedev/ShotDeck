@@ -11,6 +11,7 @@ So in Rhino the Flow actions are run by name. In the Python editor
     import flow_dcc
     adapter = flow_dcc.adapter("rhino")
 
+    adapter.action_load_file()             # open one of the task's files
     adapter.action_save()                  # save over the open model
     adapter.action_save_as()               # save somewhere you pick
     adapter.action_version_up()            # next version in the work folder

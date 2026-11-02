@@ -43,11 +43,52 @@ def install():
             menu.addSeparator()
             continue
         menu.addAction(label, getattr(module, attr))
+
+    _watch(module)
+    # 123.py runs before the main window is shown; wait for it.
+    import hdefereval
+    hdefereval.executeDeferred(lambda: common.start(module))
     return True
+
+
+_events = []
+
+
+def _watch(module):
+    """Lock every .hip Houdini loads or saves, File menu included. One
+    someone else has open is cleared again: Houdini cannot cancel a load."""
+    hou = _hou()
+    import hdefereval
+    for callback in _events:
+        hou.hipFile.removeEventCallback(callback)
+    del _events[:]
+
+    def event(event_type):
+        kind = hou.hipFileEventType
+        if event_type == kind.AfterLoad:
+            if not common.opening(module, current_scene()):
+                hdefereval.executeDeferred(_clear)
+        elif event_type == kind.AfterSave:
+            common.opening(module, current_scene())
+
+    hou.hipFile.addEventCallback(event)
+    _events.append(event)
+
+
+def _clear():
+    from .. import lock
+    _hou().hipFile.clear(suppress_save_prompt=True)
+    lock.release_all()                     # nothing is open now
 
 
 def save_scene(path):
     _hou().hipFile.save(file_name=path)
+    return path
+
+
+def open_scene(path):
+    """Houdini asks about unsaved changes itself."""
+    _hou().hipFile.load(path, ignore_load_warnings=True)
     return path
 
 

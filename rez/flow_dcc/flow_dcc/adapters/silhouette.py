@@ -21,6 +21,9 @@ HOST_MODULES = ["fx", "silhouette"]
 # Save entry points to try, in order. Each is called as method(path).
 SAVE_METHODS = ["saveProject", "save_project", "save"]
 
+# Open entry points to try, in order, as SAVE_METHODS. Unconfirmed likewise.
+OPEN_METHODS = ["loadProject", "openProject", "load_project", "open_project"]
+
 
 def host():
     """The Silhouette Python module, or None when running outside it."""
@@ -77,6 +80,22 @@ def save_scene(path):
         "None of {0} exist on the Silhouette module ({1}). Run "
         "probe_silhouette.py and add the correct one to SAVE_METHODS."
         .format(", ".join(SAVE_METHODS), getattr(module, "__name__", "?")))
+
+
+def open_scene(path):
+    """Open through whichever method this build exposes, as save_scene()."""
+    module = host()
+    if module is None:
+        raise RuntimeError("Not running inside Silhouette.")
+    for name in OPEN_METHODS:
+        method = getattr(module, name, None)
+        if callable(method):
+            method(path)
+            return path
+    raise RuntimeError(
+        "None of {0} exist on the Silhouette module. Run probe_silhouette.py "
+        "and add the correct one to OPEN_METHODS.".format(
+            ", ".join(OPEN_METHODS)))
 
 
 def current_scene():

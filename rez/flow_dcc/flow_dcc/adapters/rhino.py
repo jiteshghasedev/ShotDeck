@@ -51,6 +51,23 @@ def save_scene(path):
     return path
 
 
+def open_scene(path):
+    if _doc().Modified and not common.discard_ok(sys.modules[__name__], path):
+        return None
+    if not _rhino().RhinoDoc.OpenFile(path):
+        raise RuntimeError("Rhino refused to open {0}".format(path))
+    return path
+
+
+def pick_file(files):
+    """Rhino's own list box: Rhino on Windows has no PySide to import."""
+    from .. import picker
+    labels = [picker.label(row) for row in picker.rows(files)]
+    chosen = _rs().ListBox(labels, "Version   Artist   Saved",
+                           "Flow: Load File")
+    return files[labels.index(chosen)]["path"] if chosen else None
+
+
 def current_scene():
     return _doc().Path or ""
 

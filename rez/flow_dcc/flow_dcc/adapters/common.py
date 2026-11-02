@@ -1,8 +1,9 @@
 """What the menu actions actually do, written once for every host.
 
 Each function takes the adapter module and calls back into the handful of
-things that are genuinely host-specific: save_scene(), current_scene(),
-message(), confirm(), and ask_path().
+things that are genuinely host-specific: save_scene(), open_scene(),
+current_scene(), message(), confirm(), and ask_path() -- plus pick_file()
+for a host with no Qt to show picker.ask().
 """
 
 import functools
@@ -10,7 +11,8 @@ import os
 import subprocess
 import sys
 
-from .. import context, deadline, paths, publish, usd, versioning
+from .. import (context, deadline, lock, paths, picker, publish, usd,
+                versioning)
 
 
 def save(adapter):
@@ -27,6 +29,8 @@ def save(adapter):
             "file to save over. Using Version Up instead.")
         return version_up(adapter)
 
+    if not opening(adapter, current):     # opened behind Flow's back
+        return None
     try:
         adapter.save_scene(current)
     except Exception as e:
@@ -58,11 +62,15 @@ def save_as(adapter):
     if folder and not os.path.isdir(folder):
         os.makedirs(folder)
 
+    if not claim(adapter, path):          # saving over someone's open file
+        return None
     try:
         adapter.save_scene(path)
     except Exception as e:
+        lock.release(path)
         adapter.message("Save As failed: {0}".format(e))
         return None
+    lock.keep_only(path)
 
     if not _under(path, paths.work_dir()):
         adapter.message(
@@ -167,6 +175,128 @@ def submit_to_deadline(adapter):
     return job
 
 
+def load_file(adapter):
+    """Pick one of the task's work files -- any artist's -- and open it."""
+    files = paths.task_files()
+    if not files:
+        adapter.message(
+            "No work files for this task yet in\n{0}".format(
+                paths.work_dir() or "(launched without a task)"))
+        return None
+
+    pick = getattr(adapter, "pick_file", None)
+    if pick is None:
+        try:
+            path = picker.ask(files)
+        except ImportError:
+            adapter.message("No Qt in this host to show the file list.")
+            return None
+    else:
+        path = pick(files)        # may answer later, through open_path()
+    if not path:
+        return None
+    return open_path(adapter, path)
+
+
+def open_path(adapter, path):
+    """Lock path, then open it. Nothing is opened that someone else has."""
+    if not claim(adapter, path):
+        return None
+    try:
+        opened = adapter.open_scene(path)
+    except Exception as e:
+        adapter.message("Could not open {0}: {1}".format(path, e))
+        opened = None
+    if opened:
+        lock.keep_only(path)
+    else:
+        lock.release(path)        # cancelled: the old scene is still open
+    return opened
+
+
+def claim(adapter, path):
+    """Lock path for this session before it is opened or saved over.
+
+    False, after telling the artist who has it, when someone else does. The
+    artist's own lock from another workstation is offered for takeover --
+    that is nearly always a session that crashed or was left behind.
+    """
+    info = lock.holder(path)
+    force = False
+    if info and info.get("user") == lock.me()["user"]:
+        if not adapter.confirm(
+                "You already have {0} open on {1} since {2}.\n\nIf that "
+                "session is gone (crashed, or the machine was switched off), "
+                "take the file over?".format(os.path.basename(path),
+                                             info.get("host"),
+                                             info.get("time"))):
+            return False
+        force = True
+    elif info:
+        adapter.message(
+            "{0} is open by {1}.\n\nOnly one person can work in a file at a "
+            "time. Ask them to close it, or open another version.".format(
+                os.path.basename(path), lock.describe(info)))
+        return False
+    try:
+        lock.take(path, force=force)
+    except lock.Locked as e:
+        adapter.message(str(e))
+        return False
+    except (OSError, IOError) as e:
+        # A folder the lock cannot be written in must not stop the work.
+        sys.stdout.write("Flow: could not lock {0}: {1}\n".format(path, e))
+    return True
+
+
+def opening(adapter, path):
+    """Host callback for any open or save, Flow's or the host's own menu.
+
+    Holds path and lets go of the previous file. False when someone else
+    has it open, and the host then closes it again (or cancels the open).
+    """
+    if not path or not claim(adapter, path):
+        return not path
+    lock.keep_only(path)
+    return True
+
+
+def start(adapter):
+    """At launch, on an untitled scene: open the task's work, or begin it.
+
+    A task with files gets the Load File window. A task with none gets an
+    empty v0001 saved into its work folder, so the first file is named and
+    placed by the pipeline rather than by whoever saves first. Runs once per
+    session, and never raises -- it is the first thing an artist sees.
+    """
+    if getattr(adapter, "_flow_started", False):
+        return None
+    adapter._flow_started = True
+    ctx = context.get()
+    try:
+        current = adapter.current_scene()
+        if current:                       # launched straight into a scene
+            opening(adapter, current)
+            return None
+        if not ctx.has_task or not paths.work_dir(ctx):
+            return None
+        if paths.task_files(ctx):
+            return load_file(adapter)
+        path = publish.save_next_version(adapter, ctx)
+        sys.stdout.write("Flow: created {0}\n".format(path))
+        return path
+    except Exception as e:
+        sys.stdout.write("Flow: startup skipped: {0}\n".format(e))
+        return None
+
+
+def discard_ok(adapter, path):
+    """Ask before opening over unsaved changes. Defaults to Cancel."""
+    return adapter.confirm(
+        "The open scene has unsaved changes. Discard them and open\n"
+        "{0}?".format(path))
+
+
 def open_work_folder(adapter):
     return _open(adapter, paths.work_dir(), "work")
 
@@ -227,6 +357,7 @@ def _under(path, folder):
 # Menu attribute -> the function above it. ACTIONS names these; adapters get
 # them from bind() rather than writing seven one-line wrappers each.
 ACTION_FUNCS = {
+    "action_load_file": load_file,
     "action_save": save,
     "action_save_as": save_as,
     "action_version_up": version_up,

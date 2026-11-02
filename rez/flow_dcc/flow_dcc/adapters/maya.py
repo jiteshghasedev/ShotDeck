@@ -39,7 +39,38 @@ def install():
             cmds.menuItem(divider=True)
             continue
         cmds.menuItem(label=label, command=_callback(getattr(module, attr)))
+
+    _watch(module)
+    # Deferred again: any scene named on the command line is open by then.
+    import maya.utils
+    maya.utils.executeDeferred(lambda: common.start(module))
     return True
+
+
+_callbacks = []
+
+
+def _watch(module):
+    """Lock every file Maya opens or saves, File menu included.
+
+    The open check runs before Maya reads the file, so a file someone else
+    has open is refused rather than opened and closed again.
+    """
+    import maya.api.OpenMaya as om
+    if _callbacks:
+        om.MMessage.removeCallbacks(_callbacks)
+        del _callbacks[:]
+
+    def before_open(file_object, _data=None):
+        return common.opening(module, file_object.resolvedFullName())
+
+    def after_save(_data=None):
+        common.opening(module, current_scene())
+
+    msg = om.MSceneMessage
+    _callbacks.append(msg.addCheckFileCallback(msg.kBeforeOpenCheck,
+                                               before_open))
+    _callbacks.append(msg.addCallback(msg.kAfterSave, after_save))
 
 
 def _callback(func):
@@ -53,6 +84,15 @@ def save_scene(path):
     file_type = "mayaAscii" if path.lower().endswith(".ma") else "mayaBinary"
     cmds.file(rename=path)
     cmds.file(save=True, type=file_type)
+    return path
+
+
+def open_scene(path):
+    cmds = _cmds()
+    if cmds.file(query=True, modified=True) and not common.discard_ok(
+            sys.modules[__name__], path):
+        return None
+    cmds.file(path, open=True, force=True)
     return path
 
 

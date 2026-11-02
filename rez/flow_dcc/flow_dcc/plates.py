@@ -33,14 +33,33 @@ def renders_dir(ctx=None):
 def find_plate(root):
     """The newest plate under root: {"path", "first", "last"}, or None.
 
-    path is Nuke-style (plate.%04d.exr) for a sequence; first and last are
-    None for a movie.
+    path is Nuke-style (plate.%04d.exr) for a sequence. A sequence beats a
+    movie; a movie is the plate only when there is no sequence, and then
+    first and last are None.
 
     shortcut: the newest sequence wins; offer a pick if shots start carrying
     several plates (BG01, FG01) that comps all need.
     """
-    if not root or not os.path.isdir(root):
+    found = _scan(root)
+    return _newest([p for p in found if p["first"] is not None] or found)
+
+
+def find_movie(root):
+    """The newest movie under root (the plate's reference .mov), or None."""
+    return _newest([p for p in _scan(root) if p["first"] is None])
+
+
+def _newest(found):
+    if not found:
         return None
+    newest = max(found, key=lambda p: p["mtime"])
+    return dict((k, newest[k]) for k in ("path", "first", "last"))
+
+
+def _scan(root):
+    """Every sequence and movie under root, each with its newest mtime."""
+    if not root or not os.path.isdir(root):
+        return []
     found = {}           # (dir, head, ext, padding) or movie path -> plate
     for folder, _dirs, files in os.walk(root):
         for name in files:
@@ -69,10 +88,7 @@ def find_plate(root):
             plate["first"] = min(plate["first"], frame)
             plate["last"] = max(plate["last"], frame)
             plate["mtime"] = max(plate["mtime"], os.path.getmtime(full))
-    if not found:
-        return None
-    newest = max(found.values(), key=lambda p: p["mtime"])
-    return dict((k, newest[k]) for k in ("path", "first", "last"))
+    return list(found.values())
 
 
 def write_path(ctx=None):

@@ -7,7 +7,7 @@ imported and tested outside Nuke.
 import sys
 
 from . import MENU_NAME, actions, common
-from .. import context, plates
+from .. import context, lock, paths, plates, publish
 
 
 def _nuke():
@@ -30,8 +30,22 @@ def install():
         menu.addCommand(label, getattr(module, attr))
     menu.addSeparator()
     menu.addCommand("Load Plate + Write", setup_shot)
+    nuke.addOnScriptLoad(_on_load)
+    nuke.addOnScriptSave(lambda: common.opening(module, current_scene()))
     _after_startup(setup_empty_script)
     return True
+
+
+def _on_load():
+    """Lock every script Nuke opens, File menu included. One someone else
+    has open is cleared again -- Nuke has no way to cancel the load."""
+    if not common.opening(sys.modules[__name__], current_scene()):
+        _after_startup(_clear)                  # not from inside the load
+
+
+def _clear():
+    _nuke().scriptClear()
+    lock.release_all()                          # nothing is open now
 
 
 def _after_startup(func):
@@ -47,16 +61,26 @@ def _after_startup(func):
 # -- shot setup -----------------------------------------------------------
 
 def setup_empty_script():
-    """Nuke opened on an empty script for a shot task: give it the shot's
-    plate and a Write node, so the artist starts comping, not wiring."""
+    """Nuke opened empty on a shot task that has no work file yet: load the
+    plate and movie, add a Write, and save it as v0001 in the task's work
+    folder, so the artist starts comping, not wiring.
+
+    A task that already has work files gets the Load File window instead,
+    and so does an asset task, which has no plate -- see common.start().
+    """
     nuke = _nuke()
-    if nuke.root().name() not in ("", "Root") or nuke.allNodes():
+    if current_scene() or nuke.allNodes():
         return
     ctx = context.get()
-    if ctx.entity_type != "Shot" or not ctx.entity_root:
-        return                                   # assets have no plates
+    module = sys.modules[__name__]
+    if ctx.entity_type != "Shot" or not ctx.entity_root or \
+            not ctx.has_task or paths.task_files(ctx):
+        return common.start(module)
+    module._flow_started = True
     try:
         setup_shot(quiet=True)
+        path = publish.save_next_version(sys.modules[__name__], ctx)
+        sys.stdout.write("Flow: created {0}\n".format(path))
     except Exception as e:                       # never cost the artist Nuke
         sys.stdout.write("Flow: shot setup skipped: {0}\n".format(e))
 
@@ -82,6 +106,12 @@ def setup_shot(quiet=False):
     elif not quiet:
         message("No plate found under {0}".format(folder))
 
+    movie = plates.find_movie(folder)
+    if movie and (not plate or movie["path"] != plate["path"]):
+        mov = nuke.nodes.Read(file=movie["path"])
+        if read:
+            mov.setXYpos(read.xpos() + 150, read.ypos())
+
     path = plates.write_path(ctx)
     if not path:
         return read
@@ -100,8 +130,20 @@ def save_scene(path):
     return path
 
 
+def open_scene(path):
+    nuke = _nuke()
+    if nuke.root().modified() and not common.discard_ok(
+            sys.modules[__name__], path):
+        return None
+    nuke.scriptClear()       # scriptOpen over a non-empty script starts a 2nd Nuke
+    nuke.scriptOpen(path)
+    return path
+
+
 def current_scene():
-    return _nuke().root().name() or ""
+    """An untitled script is named "Root", which is not a file to save over."""
+    name = _nuke().root().name() or ""
+    return "" if name == "Root" else name
 
 
 def message(text):
