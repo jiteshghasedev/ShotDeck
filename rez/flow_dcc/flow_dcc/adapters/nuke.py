@@ -123,6 +123,21 @@ def _keep_open(path, delays=(1000, 3000, 6000, 10000)):
         QTimer.singleShot(delay, check)
 
 
+def _named_format(read):
+    """The Read's format by name. An unnamed one on the root is saved
+    without a name, and Nuke warns "not in named format list" on load."""
+    nuke = _nuke()
+    fmt = read.format()
+    size = (fmt.width(), fmt.height(), fmt.pixelAspect())
+    for named in nuke.formats():
+        if named.name() and \
+                (named.width(), named.height(), named.pixelAspect()) == size:
+            return named.name()
+    name = "Flow_{0}x{1}".format(*size[:2])
+    nuke.addFormat("{0} {1} {2} {3}".format(size[0], size[1], size[2], name))
+    return name
+
+
 def _has_nodes():
     """Anything but the Viewer a fresh GUI session starts with."""
     return any(n.Class() != "Viewer" for n in _nuke().allNodes())
@@ -145,7 +160,7 @@ def setup_shot(quiet=False):
             root = nuke.root()
             root["first_frame"].setValue(plate["first"])
             root["last_frame"].setValue(plate["last"])
-        nuke.root()["format"].setValue(read["format"].value())
+        nuke.root()["format"].setValue(_named_format(read))
         log.info("plate %s", plate["path"])
     elif quiet:
         log.warning("no plate (image sequence or movie) under %s", folder)

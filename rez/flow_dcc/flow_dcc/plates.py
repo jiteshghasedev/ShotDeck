@@ -34,14 +34,23 @@ def find_plate(root):
     """The newest plate under root: {"path", "first", "last"}, or None.
 
     path is Nuke-style (plate.%04d.exr) for a sequence. A sequence beats a
-    movie; a movie is the plate only when there is no sequence, and then
-    first and last are None.
+    movie, and among sequences the format ranks before age, in IMAGES order:
+    EXR frames beat a newer review JPEG of the same shot. A movie is the plate
+    only when there is no sequence, and then first and last are None.
 
-    shortcut: the newest sequence wins; offer a pick if shots start carrying
-    several plates (BG01, FG01) that comps all need.
+    shortcut: the newest sequence of the best format wins; offer a pick if
+    shots start carrying several plates (BG01, FG01) that comps all need.
     """
     found = _scan(root)
-    return _newest([p for p in found if p["first"] is not None] or found)
+    sequences = [p for p in found if p["first"] is not None]
+    if not sequences:
+        return _newest(found)
+    best = min(_rank(p) for p in sequences)
+    return _newest([p for p in sequences if _rank(p) == best])
+
+
+def _rank(plate):
+    return IMAGES.index(os.path.splitext(plate["path"])[1].lower())
 
 
 def find_movie(root):

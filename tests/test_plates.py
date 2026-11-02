@@ -56,6 +56,16 @@ def test_the_studio_plate_layout_finds_the_sequence_and_its_movie():
     assert plates.find_movie(root)["path"] == base + "UAT6_AD1008_v001.mov"
 
 
+def test_exr_frames_beat_a_newer_jpeg_and_a_jpeg_alone_still_loads():
+    root = tempfile.mkdtemp()
+    for f in (1001, 1002):
+        _touch(root, f"review/v002/sh.{f}.jpg", 300)
+    assert plates.find_plate(root)["path"].endswith("/review/v002/sh.%04d.jpg")
+    for f in (1001, 1002):
+        _touch(root, f"full/v001/sh.{f}.exr", 100)
+    assert plates.find_plate(root)["path"].endswith("/full/v001/sh.%04d.exr")
+
+
 def test_the_write_path_follows_the_script_name():
     class Ctx:
         entity_root = "/jobs/uat6/sequences/SEQ001/shots/AD1030"
@@ -63,7 +73,8 @@ def test_the_write_path_follows_the_script_name():
     assert path.startswith(Ctx.entity_root + "/nuke/renders/")
     assert path.endswith(".%04d.exr") and "[value root.name]" in path
     named = plates.write_path(Ctx(), "/work/sh_comp_v0002.nk")
-    assert named == Ctx.entity_root +         "/nuke/renders/sh_comp_v0002/sh_comp_v0002.%04d.exr"
+    assert named == Ctx.entity_root + \
+        "/nuke/renders/sh_comp_v0002/sh_comp_v0002.%04d.exr"
     Ctx.entity_root = ""
     assert plates.write_path(Ctx()) is None
 
@@ -105,6 +116,26 @@ class _Node:
     def setXYpos(self, x, y):
         pass
 
+    def format(self):
+        return _Format(640, 480, 1.0, "")       # what a Read reports: unnamed
+
+
+class _Format:
+    def __init__(self, width, height, aspect, name):
+        self._v = (width, height, aspect, name)
+
+    def width(self):
+        return self._v[0]
+
+    def height(self):
+        return self._v[1]
+
+    def pixelAspect(self):
+        return self._v[2]
+
+    def name(self):
+        return self._v[3]
+
 
 def _fake_nuke(made):
     import types
@@ -123,6 +154,9 @@ def _fake_nuke(made):
         return make
     nuke.nodes = types.SimpleNamespace(Read=maker("Read"), Write=maker("Write"))
     nuke.message = lambda text: None
+    nuke.formats = lambda: [_Format(1920, 1080, 1.0, "HD_1080")]
+    nuke.added_formats = []
+    nuke.addFormat = nuke.added_formats.append
     nuke.saved = []
 
     def save_as(path, overwrite=0):
@@ -165,6 +199,8 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert (read["first"].value(), read["last"].value()) == (1001, 1050)
         assert (root["first_frame"].value(), root["last_frame"].value()) == \
             (1001, 1050)
+        assert root["format"].value() == "Flow_640x480"     # named, no warning
+        assert fake.added_formats == ["640 480 1.0 Flow_640x480"]
         assert write.inputs == [read]
         assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/uat6_SEQ001_AD1030_comp_jitesh_v0001/"             "uat6_SEQ001_AD1030_comp_jitesh_v0001.%04d.exr"
 
