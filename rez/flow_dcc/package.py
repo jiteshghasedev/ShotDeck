@@ -1,6 +1,6 @@
 name = "flow_dcc"
 
-version = "1.1.0"
+version = "1.2.0"
 
 description = \
     "Flow's in-DCC tools: the Python package the adapters live in, plus " \

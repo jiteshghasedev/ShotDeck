@@ -71,7 +71,7 @@ class MainWindow(QMainWindow):
         self._sync_timer.setInterval(max(config.SYNC_SECONDS, 1) * 1000)
         self._sync_timer.timeout.connect(self._poll_sync)
 
-        self.setWindowTitle(config.APP_TITLE)
+        self.setWindowTitle(f"{config.APP_TITLE} {config.APP_VERSION}")
         self.resize(1080, 720)
         self.setMinimumSize(760, 480)
         self.setStyleSheet(STYLE)

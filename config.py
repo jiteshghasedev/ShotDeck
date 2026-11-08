@@ -608,3 +608,6 @@ DELIVERY_OUTBOX = os.environ.get("FLOW_DELIVERY_OUTBOX",
 DELIVERY_DONE_STATUS = os.environ.get("FLOW_DELIVERY_DONE_STATUS", "dlvd")
 
 APP_TITLE = "Flow"
+# Release number: bump it and add a CHANGELOG.md entry with every release.
+# FlowDash shows it too, so a web server running an old clone is easy to spot.
+APP_VERSION = "1.1.0"

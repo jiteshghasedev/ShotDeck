@@ -77,7 +77,8 @@ BIN="$APP_ROOT/dist/Flow/Flow"
 # imports and starts without needing a display on the build box.
 "$BIN" --help >/dev/null || { echo "build: $BIN cannot start -- see the traceback above." >&2; exit 1; }
 
-VERSION="$(git -C "$APP_ROOT" describe --tags --always --dirty 2>/dev/null || date +%Y%m%d)"
+VERSION="$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' config.py)"
+[ -n "$VERSION" ] || { echo "build: no APP_VERSION in config.py" >&2; exit 1; }
 TARBALL="$APP_ROOT/dist/Flow-${VERSION}-el9.tar.gz"
 tar -czf "$TARBALL" -C "$APP_ROOT/dist" Flow
 
