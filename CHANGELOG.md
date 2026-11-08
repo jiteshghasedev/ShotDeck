@@ -9,10 +9,15 @@ Two version numbers live in this repo:
 - **flow_dcc** (rez package for Nuke, Maya and the other DCCs):
   `version` in `rez/flow_dcc/package.py`.
 
-For each release: bump the number that changed, add a section here, commit,
-then tag it (`git tag v1.1.0`).
+From 1.3.1, `APP_VERSION` is the repo's release: the git tag is
+`v<APP_VERSION>`, so the version Flow and FlowDash show matches the tag.
 
-## Flow 1.1.1 (2026-11-09)
+For each release: bump the number that changed, add a section here, commit,
+then tag it (`git tag v1.3.1`).
+
+## Flow 1.3.1 (2026-11-09)
+
+`APP_VERSION` jumps from 1.1.0 to 1.3.1 to match the git tag `v1.3.1`.
 
 - RV's **Send Annotations to ShotGrid** and the DCC Task panel failed with
   "SG_SCRIPT_KEY is not set" when the key came from Flow's built-in default
