@@ -1,5 +1,5 @@
 """A task's work files: listing every artist's, Load File, and the launch
-that opens one or creates v0001."""
+that opens the artist's newest or creates their v0001."""
 
 import json
 import os
@@ -47,7 +47,7 @@ def _touch(folder, name, mtime=100):
 
 
 @_with_shot
-def test_every_artists_files_are_listed_and_versions_are_task_wide(shot, work):
+def test_every_artists_files_are_listed_and_versions_are_per_artist(shot, work):
     _touch(work, STEM + "_jitesh_v0001.ma", 100)
     _touch(work, STEM + "_rahul_v0002.ma", 200)
     _touch(work, STEM + "_rahul_v0002.ma~", 300)          # backup, not work
@@ -58,8 +58,9 @@ def test_every_artists_files_are_listed_and_versions_are_task_wide(shot, work):
     assert [(f["version"], f["user"]) for f in files] == \
         [(2, "rahul"), (1, "jitesh")]
     assert files[0]["path"] == work + "/" + STEM + "_rahul_v0002.ma"
-    assert paths.existing_versions() == [1, 2]
-    assert versioning.next_scene_path().endswith(STEM + "_jitesh_v0003.ma")
+    assert [f["user"] for f in paths.artist_files()] == ["jitesh"]
+    assert paths.existing_versions() == [1]               # rahul's v0002 is his
+    assert versioning.next_scene_path().endswith(STEM + "_jitesh_v0002.ma")
 
     rows = picker.rows(files)
     assert rows[0][:2] == ("v0002", "rahul") and rows[0][4].endswith(".ma")
@@ -111,17 +112,29 @@ def test_the_first_launch_on_a_task_saves_an_empty_v0001(shot, work):
 
 
 @_with_shot
-def test_a_task_with_files_shows_them_and_opens_the_pick(shot, work):
-    _touch(work, STEM + "_rahul_v0001.ma", 100)
+def test_a_launch_opens_the_artists_newest_file_as_it_is(shot, work):
+    _touch(work, STEM + "_rahul_v0003.ma", 300)
+    _touch(work, STEM + "_jitesh_v0001.ma", 100)
     _touch(work, STEM + "_jitesh_v0002.ma", 200)
     host = _Host()
     common.start(host)
-    assert host.saved == []
-    assert [f["version"] for f in host.shown[0]] == [2, 1]
-    assert host.opened == [work + "/" + STEM + "_rahul_v0001.ma"]
+    assert host.saved == [] and host.shown == []          # no picker, no new version
+    assert host.opened == [work + "/" + STEM + "_jitesh_v0002.ma"]
 
-    common.load_file(host)                  # the menu entry, any time
-    assert len(host.shown) == 2 and len(host.opened) == 2
+    common.load_file(host)                  # the menu entry, any artist's file
+    assert [f["version"] for f in host.shown[0]] == [3, 2, 1]
+    assert len(host.opened) == 2
+    lock.release_all()
+
+
+@_with_shot
+def test_an_artist_new_to_a_task_gets_their_own_v0001(shot, work):
+    _touch(work, STEM + "_rahul_v0003.ma", 300)
+    host = _Host()
+    path = common.start(host)
+    assert path == work + "/" + STEM + "_jitesh_v0001.ma"
+    assert host.saved == [path] and host.opened == [] and host.shown == []
+    lock.release_all()
 
 
 @_with_shot

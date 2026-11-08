@@ -262,12 +262,14 @@ def opening(adapter, path):
 
 
 def start(adapter):
-    """At launch, on an untitled scene: open the task's work, or begin it.
+    """At launch, on an untitled scene: open the artist's work, or begin it.
 
-    A task with files gets the Load File window. A task with none gets an
-    empty v0001 saved into its work folder, so the first file is named and
-    placed by the pipeline rather than by whoever saves first. Runs once per
-    session, and never raises -- it is the first thing an artist sees.
+    An artist with files on the task gets their newest one opened as it is:
+    no picker, no new version (Load File and Version Up stay on the menu).
+    One with none gets their own empty v0001 saved into the work folder, so
+    the first file is named and placed by the pipeline rather than by
+    whoever saves first. Runs once per session, and never raises -- it is
+    the first thing an artist sees.
     """
     if getattr(adapter, "_flow_started", False):
         return None
@@ -280,8 +282,9 @@ def start(adapter):
             return None
         if not ctx.has_task or not paths.work_dir(ctx):
             return None
-        if paths.task_files(ctx):
-            return load_file(adapter)
+        own = paths.artist_files(ctx)
+        if own:
+            return open_path(adapter, own[0]["path"])
         path = publish.save_next_version(adapter, ctx)
         sys.stdout.write("Flow: created {0}\n".format(path))
         return path

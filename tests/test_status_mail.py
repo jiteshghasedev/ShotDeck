@@ -63,6 +63,26 @@ def test_complete_and_package_mail_production_not_the_leads():
         config.PRODUCTION_MAIL = saved
 
 
+def test_review_results_mail_the_artists_not_the_reviewer():
+    task = dict(TASK, sg_assigned_to="Art@5and8.ai, jitesh@5and8.ai")
+    sent = []
+    real = status_mail._send_email
+    status_mail._send_email = lambda: lambda *a: sent.append(a)
+    try:
+        for code in ("nts", "iad", "fin"):
+            assert status_mail.wants_mail(code)
+        to = status_mail.send(None, task, "Jitesh", "jitesh@5and8.ai",
+                              "Fix the edge", "prw", "nts")
+        mine = status_mail.send(None, dict(TASK, sg_assigned_to="jitesh@5and8.ai"),
+                                "Jitesh", "jitesh@5and8.ai", "", "ip", "fin")
+    finally:
+        status_mail._send_email = real
+    assert to == ["art@5and8.ai"] and mine == []
+    (addrs, subject, body), = sent
+    assert subject == "[UAT6] AD1030 Comp set to nts - Jitesh"
+    assert "Fix the edge" in body and "prw -&gt; nts" in body
+
+
 def test_a_redirect_sends_everything_to_one_address():
     os.environ["FLOW_MAIL_REDIRECT"] = "test@5and8.ai"
     try:

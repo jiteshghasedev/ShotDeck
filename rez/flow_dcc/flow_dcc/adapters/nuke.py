@@ -72,19 +72,20 @@ def _after_startup(func):
 # -- shot setup -----------------------------------------------------------
 
 def setup_empty_script():
-    """Nuke opened empty on a shot task that has no work file yet: load the
-    plate and movie, add a Write, and save it as v0001 in the task's work
-    folder, so the artist starts comping, not wiring.
+    """Nuke opened empty on a shot task where this artist has no work file
+    yet: load the plate and movie, add a Write, and save it as their v0001
+    in the task's work folder, so the artist starts comping, not wiring.
 
-    A task that already has work files gets the Load File window instead,
-    and so does an asset task, which has no plate -- see common.start().
+    An artist with a work file on the task gets their newest one opened
+    instead, and an asset task, which has no plate, goes the same way --
+    see common.start().
     """
     if current_scene() or _has_nodes():
         return
     ctx = context.get()
     module = sys.modules[__name__]
     if ctx.entity_type != "Shot" or not ctx.entity_root or \
-            not ctx.has_task or paths.task_files(ctx):
+            not ctx.has_task or paths.artist_files(ctx):
         return common.start(module)
     module._flow_started = True
     try:

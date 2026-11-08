@@ -8,7 +8,7 @@ import config
 
 sys.path.insert(0, config.DCC_SOURCE_ROOT)
 
-from flow_dcc import plates  # noqa: E402
+from flow_dcc import lock, plates  # noqa: E402
 
 
 def _touch(root, rel, mtime):
@@ -185,6 +185,7 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
     sys.modules["nuke"] = fake
     kept = []
     real_keep_open, adapter._keep_open = adapter._keep_open, kept.append
+    real_open = adapter.open_scene
     try:
         adapter.setup_empty_script()
         read, movie, write = made
@@ -218,14 +219,15 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         fake.allNodes = lambda *a: []
         root.name = lambda: "Root"                  # a fresh, untitled Nuke
         open(fake.saved[0], "w").close()
-        picked = []
-        adapter.pick_file = lambda files: picked.append(files) and None
+        opened = []
+        adapter.open_scene = lambda path: opened.append(path) or path
         adapter._flow_started = False
-        adapter.setup_empty_script()      # the task already has a work file
+        adapter.setup_empty_script()      # the artist already has a work file
         assert made == [] and len(fake.saved) == 2
-        assert [f["version"] for f in picked[0]] == [1]
+        assert opened == [script]         # opened as is, no new version
     finally:
-        adapter.__dict__.pop("pick_file", None)
+        adapter.open_scene = real_open
+        lock.release_all()
         adapter._keep_open = real_keep_open    # its timers outlive the fake
         adapter._flow_started = False
         del sys.modules["nuke"]

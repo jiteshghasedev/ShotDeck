@@ -216,12 +216,19 @@ def scene_path(version, ctx=None, ext=None):
 
 
 def existing_versions(ctx=None, ext=None):
-    """Version numbers already on disk for this task, ascending.
+    """This artist's version numbers on disk for this task, ascending.
 
-    Counted across every artist on the task, so a version number is used once
-    per task: v0004 is one file, whoever saved it.
+    Counted per artist, so every artist's own files start at v0001; the
+    artist's name in the file name keeps work and publish paths apart.
     """
-    return sorted(set(f["version"] for f in task_files(ctx, ext)))
+    return sorted(set(f["version"] for f in artist_files(ctx, ext)))
+
+
+def artist_files(ctx=None, ext=None):
+    """This artist's own work files for this task, newest version first."""
+    ctx = ctx or context.get()
+    me = (ctx.user or "").lower()
+    return [f for f in task_files(ctx, ext) if (f["user"] or "").lower() == me]
 
 
 def task_files(ctx=None, ext=None):

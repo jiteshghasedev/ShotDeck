@@ -262,6 +262,14 @@ PRODUCTION_MAIL = [
     s.strip() for s in os.environ.get("FLOW_PRODUCTION_MAIL", "").split(",")
     if s.strip()
 ] or [f"{login}@{USER_EMAIL_DOMAIN}" for login in PRODUCTION_USERS]
+# A reviewer's verdict: setting a task to one of these (Notes, Internal
+# Approved, Final on 5and8) in Flow asks for a note and mails it to the
+# task's artists (status_mail.py). The daemon's artist mail never sees Flow's
+# writes: SG_daemon logs no events.
+REVIEW_RESULT_STATUSES = [
+    s.strip() for s in os.environ.get(
+        "FLOW_REVIEW_RESULT_STATUSES", "nts,iad,fin").split(",") if s.strip()
+]
 
 # Live sync: every this many seconds Flow asks ShotGrid for task events newer
 # than the last one it saw -- one small EventLogEntry query -- and reloads the

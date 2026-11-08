@@ -761,6 +761,7 @@ class MainWindow(QMainWindow):
     def _ask_status_note(self, task, code):
         """The artist's note for whoever gets the mail; None if they cancel."""
         who = "the leads" if code == config.REVIEW_MAIL_STATUS \
+            else "the artist" if code in config.REVIEW_RESULT_STATUSES \
             else "production"
         text, ok = QInputDialog.getMultiLineText(
             self, f"Set to {code}",

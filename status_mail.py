@@ -3,10 +3,11 @@
 Set in Flow to                        mails
 config.PRODUCTION_MAIL_STATUSES       production: config.PRODUCTION_MAIL
   ("cmpt", "pkg")
+config.REVIEW_RESULT_STATUSES         the task's artists (sg_assigned_to),
+  ("nts", "iad", "fin")               less whoever set it
 
 config.REVIEW_MAIL_STATUS ("prw") also asks the artist for a note, but the
-mail to the leads -- and the approved / needs-changes mail back to the
-artist -- comes from the SG daemon's sg_task_status_mail plugin
+mail to the leads comes from the SG daemon's sg_task_status_mail plugin
 (vfx-ingest-pipeline), so a status set on the ShotGrid site mails too.
 
 The mail carries the task and the artist's note. The SMTP side is the
@@ -20,6 +21,7 @@ that one address instead, for testing.
 
 import html
 import os
+import re
 import smtplib  # noqa: F401 -- the frozen app must bundle it for the mailer
 import sys
 
@@ -32,7 +34,8 @@ log = applog.get()
 def wants_mail(code):
     """Whether Flow asks the artist for a note when setting this status."""
     return code == config.REVIEW_MAIL_STATUS or \
-        code in config.PRODUCTION_MAIL_STATUSES
+        code in config.PRODUCTION_MAIL_STATUSES or \
+        code in config.REVIEW_RESULT_STATUSES
 
 
 def message(task, artist, email, note, old, new):
@@ -45,7 +48,7 @@ def message(task, artist, email, note, old, new):
     subject = f"[{project}] {entity} {name} {what} - {artist}"
     rows = [("Project", project), ("Shot / Asset", entity), ("Task", name),
             ("Step", step), ("Status", f"{old or '-'} -> {new}"),
-            ("Artist", f"{artist} <{email}>" if email else artist)]
+            ("Changed by", f"{artist} <{email}>" if email else artist)]
     body = (
         "<p><b>{0}</b>: <b>{1}</b> {2}.</p><table>{3}</table>"
         "<p><b>Note</b></p><p>{4}</p>"
@@ -59,9 +62,25 @@ def message(task, artist, email, note, old, new):
     return subject, body
 
 
-def _to(sg, task, new):
+def _artists(task, changer):
+    """The task's artists' addresses from sg_assigned_to ("a@x, b@x"), less
+    whoever made the change: an artist finishing their own task mails nobody.
+
+    shortcut: addresses only; an owner field holding names or entity links
+    mails nobody -- use the pipeline's task_mail.addresses if a site has one.
+    """
+    value = task.get(config.TASK_OWNER_FIELD)
+    found = re.findall(r"[^@\s,;]+@[^@\s,;]+",
+                       value if isinstance(value, str) else "")
+    return [a for a in dict.fromkeys(f.lower() for f in found)
+            if a != (changer or "").lower()]
+
+
+def _to(sg, task, new, email=""):
     if new in config.PRODUCTION_MAIL_STATUSES:
         return list(config.PRODUCTION_MAIL), "FLOW_PRODUCTION_MAIL"
+    if new in config.REVIEW_RESULT_STATUSES:
+        return _artists(task, email), config.TASK_OWNER_FIELD
     return [], ""
 
 
@@ -69,7 +88,7 @@ def send(sg, task, artist, email, note, old, new):
     """Mail whoever this status is for. Returns who it went to; [] if nobody."""
     if os.environ.get("FLOW_MAIL_OFF") == "1":
         return []
-    to, source = _to(sg, task, new)
+    to, source = _to(sg, task, new, email)
     if not to:
         if source:
             log.info("nobody in %s; no mail for task %s going to %s",
