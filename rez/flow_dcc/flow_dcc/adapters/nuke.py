@@ -35,6 +35,7 @@ def install():
         menu.addCommand(label, getattr(module, attr))
     menu.addSeparator()
     menu.addCommand("Load Plate + Write", setup_shot)
+    menu.addCommand("Task Panel...", module.action_task_panel)
     nuke.addOnScriptLoad(_on_load)
     nuke.addOnScriptSave(_on_save)
     _after_startup(setup_empty_script)

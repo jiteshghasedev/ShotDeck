@@ -12,6 +12,20 @@ Two version numbers live in this repo:
 For each release: bump the number that changed, add a section here, commit,
 then tag it (`git tag v1.1.0`).
 
+## flow_dcc 1.4.0 (2026-11-08)
+
+- Nuke and Maya: **5and8 > Task Panel...** shows the launched task as
+  ShotGrid has it:
+  - status, artists, reviewers and due date
+  - the newest 20 Versions with thumbnails
+  - every note on the task or on those Versions (RV annotations included),
+    with replies; the author is the note's signature
+- The artist can reply to a note, open a note's images, and set the task's
+  status with an optional note. Replies and notes are signed like every Flow
+  note. Flow's own status mails (production for `cmpt`/`pkg`, artists for
+  `nts`/`iad`/`fin`) are not sent from a status set here.
+- `flow_dcc.__version__` matches the package version again.
+
 ## flow_dcc 1.3.0 (2026-11-08)
 
 - RV: **Flow > Send Annotations to ShotGrid...** sends every frame with a

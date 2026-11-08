@@ -324,6 +324,12 @@ def show_context(adapter):
     return text
 
 
+def task_panel(adapter):
+    """The Task panel: status, versions and notes of this task (Qt hosts)."""
+    from .. import task_panel as panel     # Qt is imported only when opened
+    return panel.show(adapter)
+
+
 # -- helpers --------------------------------------------------------------
 
 def _open(adapter, folder, label):
@@ -369,6 +375,7 @@ ACTION_FUNCS = {
     "action_open_work_folder": open_work_folder,
     "action_open_publish_folder": open_publish_folder,
     "action_context": show_context,
+    "action_task_panel": task_panel,
 }
 
 

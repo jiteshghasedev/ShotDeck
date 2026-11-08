@@ -57,7 +57,7 @@ MODULES = [
     "test_launch_env",
     "test_plates",
     "test_work_files",
-    "test_rv_review", "test_status_mail",
+    "test_rv_review", "test_status_mail", "test_task_panel",
     "test_ui",
 ]
 

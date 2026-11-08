@@ -39,6 +39,10 @@ def install():
             cmds.menuItem(divider=True)
             continue
         cmds.menuItem(label=label, command=_callback(getattr(module, attr)))
+    # Nuke and Maya only for now; the other Qt hosts can add the same line.
+    cmds.menuItem(divider=True)
+    cmds.menuItem(label="Task Panel...",
+                  command=_callback(module.action_task_panel))
 
     _watch(module)
     # Deferred again: any scene named on the command line is open by then.
