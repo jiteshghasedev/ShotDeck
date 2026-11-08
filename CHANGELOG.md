@@ -12,6 +12,13 @@ Two version numbers live in this repo:
 For each release: bump the number that changed, add a section here, commit,
 then tag it (`git tag v1.1.0`).
 
+## Flow 1.1.1 (2026-11-09)
+
+- RV's **Send Annotations to ShotGrid** and the DCC Task panel failed with
+  "SG_SCRIPT_KEY is not set" when the key came from Flow's built-in default
+  rather than `/etc/sgdesk/sgdesk.env`. Flow now passes `SG_SCRIPT_NAME` and
+  `SG_SCRIPT_KEY` on to everything it launches.
+
 ## flow_dcc 1.4.0 (2026-11-08)
 
 - Nuke and Maya: **5and8 > Task Panel...** shows the launched task as

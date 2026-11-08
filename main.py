@@ -1,10 +1,12 @@
 import argparse
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import applog
 import auth
+import config
 from auth import login_dialog
 from sg_client import SGClient
 from ui.branding import Splash
@@ -62,6 +64,10 @@ def main():
         splash.close()
         QMessageBox.critical(None, "Flow", str(e))
         return 1
+    # RV and the DCCs read the script user from the environment, not from
+    # config, so a key that came from config's default must be exported too.
+    os.environ.setdefault("SG_SCRIPT_NAME", config.SG_SCRIPT_NAME)
+    os.environ.setdefault("SG_SCRIPT_KEY", config.SG_SCRIPT_KEY)
 
     splash.set_message("Preparing Workspace")
     win = MainWindow(sg, login=result.login, auth_result=result)
