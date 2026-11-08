@@ -5,14 +5,18 @@ linked to the task or to its shot (or asset), oldest at the top -- drawn as
 message bubbles: yours on the right, everyone else's on the left, each named
 by the login it was signed with (see notes_service.sign). A note that came
 from the shot rather than this task is tagged with where it came from, and
-the chips at the top narrow the chat to the task or the shot. Posting writes
-a new Note on the task.
+the chips at the top narrow the chat to the task or the shot. A note's
+pictures -- a reviewer's RV annotations -- show in its bubble; click one to
+see it full screen. Posting writes a new Note on the task.
 """
 
 import datetime
+import getpass
+import os
+import tempfile
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup, QDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
@@ -28,6 +32,111 @@ log = applog.get()
 
 
 ALL, TASK, SHOT = "all", "task", "shot"
+
+IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".bmp")
+# Note pictures, downloaded once per user and kept for the next look.
+IMAGE_CACHE = os.path.join(tempfile.gettempdir(),
+                           f"flow_note_images_{getpass.getuser()}")
+
+
+def images_of(message):
+    """The picture attachments of a note; replies cannot carry any."""
+    return [a for a in (message.raw.get("attachments") or [])
+            if (a.get("name") or "").lower().endswith(IMAGE_TYPES)]
+
+
+def download_images(client, note_id, attachments, folder=None):
+    """[path] of these attachments, each downloaded once into the note's own
+    folder under IMAGE_CACHE."""
+    folder = folder or os.path.join(IMAGE_CACHE, str(note_id))
+    os.makedirs(folder, exist_ok=True)
+    paths = []
+    for attachment in attachments:
+        path = os.path.join(folder, os.path.basename(
+            attachment.get("name") or f"attachment_{attachment['id']}"))
+        if not os.path.isfile(path):
+            client.download_attachment(attachment, path)
+        paths.append(path)
+    return paths
+
+
+class PictureViewer(QDialog):
+    """A note's pictures full screen. Esc or a click closes; the arrow keys
+    step through the note's other pictures."""
+
+    def __init__(self, paths, index=0, parent=None):
+        super().__init__(parent)
+        self.paths, self.index = paths, index
+        self.setWindowTitle("Note picture")
+        self.setStyleSheet("background: black; color: #e6e8eb;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 8)
+        self.image = QLabel()
+        self.image.setAlignment(Qt.AlignCenter)
+        self.image.setMinimumSize(1, 1)       # or the pixmap pins the window size
+        lay.addWidget(self.image, 1)
+        self.caption = QLabel()
+        self.caption.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.caption)
+        self._show()
+
+    def _show(self):
+        path = self.paths[self.index]
+        self.pixmap = QPixmap(path)
+        count = (f"  ({self.index + 1} of {len(self.paths)})"
+                 if len(self.paths) > 1 else "")
+        self.caption.setText(f"{os.path.basename(path)}{count}   ·   "
+                             + ("← → for the others   ·   " if count else "")
+                             + "Esc or click to close")
+        self._fit()
+
+    def _fit(self):
+        if self.pixmap.isNull():
+            self.image.setText("This picture could not be read.")
+            return
+        self.image.setPixmap(self.pixmap.scaled(
+            self.image.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def step(self, delta):
+        self.index = (self.index + delta) % len(self.paths)
+        self._show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Right, Qt.Key_Space, Qt.Key_Down):
+            self.step(1)
+        elif event.key() in (Qt.Key_Left, Qt.Key_Up):
+            self.step(-1)
+        else:
+            super().keyPressEvent(event)      # Esc closes
+
+    def mouseReleaseEvent(self, event):
+        self.close()
+
+
+class Picture(QLabel):
+    """A note's image, scaled to the bubble; a click shows it full screen."""
+
+    def __init__(self, path, paths=None, index=0, width=480):
+        super().__init__()
+        self.path, self.paths, self.index = path, paths or [path], index
+        self.viewer = None
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self.setText(os.path.basename(path))
+        else:
+            self.setPixmap(pixmap.scaledToWidth(
+                min(width, pixmap.width()), Qt.SmoothTransformation))
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(f"{os.path.basename(path)} (click for full screen)")
+
+    def mouseReleaseEvent(self, event):
+        self.viewer = PictureViewer(self.paths, self.index, self.window())
+        self.viewer.setAttribute(Qt.WA_DeleteOnClose)
+        self.viewer.showFullScreen()
 
 
 def _when(value):
@@ -101,6 +210,7 @@ class Bubble(QWidget):
             body.setWordWrap(True)
             card.setMinimumWidth(420)
         lay.addWidget(body)
+        self.card, self.card_lay = card, lay
 
         if mine:
             row.addStretch()
@@ -117,6 +227,8 @@ class TaskNotesDialog(QDialog):
     def __init__(self, sg, project, task, parent=None):
         super().__init__(parent)
         self.service = notes_service.NotesService(sg)
+        self.client = sg
+        self._pictures = {}           # note id -> [path], once downloaded
         self.project = project
         self.task = task
         self.messages = []
@@ -257,11 +369,31 @@ class TaskNotesDialog(QDialog):
                 divider.setObjectName("dayDivider")
                 divider.setAlignment(Qt.AlignCenter)
                 self.host_lay.addWidget(divider)
-            self.host_lay.addWidget(
-                Bubble(message, self.service.can_modify(message)))
+            bubble = Bubble(message, self.service.can_modify(message))
+            self.host_lay.addWidget(bubble)
+            if message.kind == "note" and images_of(message):
+                self._show_pictures(bubble, message)
         # After layout, or the maximum is still the old, shorter one.
         QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(
             self.scroll.verticalScrollBar().maximum()))
+
+    def _show_pictures(self, bubble, message):
+        """Into the bubble now if downloaded before, else once they are."""
+        def add(paths):
+            self._pictures[message.id] = paths
+            try:
+                for i, path in enumerate(paths):
+                    bubble.card_lay.addWidget(Picture(path, paths, i))
+                bubble.card.setMinimumWidth(420)
+            except RuntimeError:
+                pass                  # redrawn meanwhile; the next draw has them
+
+        if message.id in self._pictures:
+            add(self._pictures[message.id])
+            return
+        jobs.run(self._jobs, download_images, add, self.client, message.id,
+                 images_of(message), on_error=lambda e: log.warning(
+                     "note %s images not loaded: %s", message.id, e))
 
     def _failed(self, message):
         log.warning("could not read the task's notes: %s", message)

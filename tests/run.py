@@ -58,6 +58,7 @@ MODULES = [
     "test_plates",
     "test_work_files",
     "test_rv_review", "test_status_mail", "test_task_panel",
+    "test_note_images",
     "test_ui",
 ]
 

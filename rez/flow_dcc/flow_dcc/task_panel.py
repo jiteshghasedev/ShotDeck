@@ -3,10 +3,11 @@
     5and8 > Task Panel...
 
 shows the task's status, artists, reviewers and due date, its newest
-Versions with thumbnails, and every note on the task or on those Versions --
-the reviewer's RV annotations included -- with their replies. The artist can
-reply to a note, open a note's images, and change the task's status with an
-optional note, without leaving Nuke or Maya.
+Versions with thumbnails, and every note on the task, on those Versions or on
+the task's shot or asset -- the reviewer's RV annotations included, with
+their images -- grouped by the task each was written for, with replies. The
+artist can reply to a note, open a note's images, and change the task's
+status with an optional note, without leaving Nuke or Maya.
 
 Written as the ShotGrid script user, like everything Flow writes, and signed
 "Jitesh: ..." with FLOW_USER so Flow and FlowDash read the artist back as the
@@ -16,6 +17,7 @@ The data half (load, threads, reply, set_status) is plain Python and tested
 with a fake ShotGrid; only show() needs Qt.
 """
 
+import getpass
 import os
 import re
 import subprocess
@@ -34,6 +36,9 @@ REPLY_FIELDS = ["content", "user", "created_at", "entity"]
 # Newest Versions shown. Their notes are the ones read, so this also bounds
 # how far back the note list goes for notes not linked to the task itself.
 VERSION_LIMIT = 20
+# Note images, downloaded once per user and reused by every panel.
+IMAGE_CACHE = os.path.join(tempfile.gettempdir(),
+                           "flow_note_images_%s" % getpass.getuser())
 
 # Same signature as Flow's notes_service: "Jitesh: ..." or the earlier
 # "[jitesh] ...". The colon needs a space after it so a URL is not one.
@@ -82,7 +87,26 @@ def _message(row):
             "text": text}
 
 
-def threads(notes, replies):
+def group_of(note, task, version_ids=()):
+    """(the task a note was written for, whether that is this task).
+
+    A note on one of this task's Versions with no task on it (the ShotGrid
+    site's media player) counts as this task's. A note on the shot or asset
+    alone is grouped under its entity type.
+    """
+    task = task or {}
+    linked = note.get("tasks") or []
+    on_version = any(l.get("type") == "Version" and l.get("id") in version_ids
+                     for l in note.get("note_links") or [])
+    if any(t.get("id") == task.get("id") for t in linked) or             (on_version and not linked):
+        return task.get("content") or "This task", True
+    names = [t.get("name") for t in linked if t.get("name")]
+    if names:
+        return ", ".join(names), False
+    return (task.get("entity") or {}).get("type") or "Shot", False
+
+
+def threads(notes, replies, task=None, version_ids=()):
     """Notes in the order given, each with its replies oldest first."""
     by_note = {}
     for reply in replies:
@@ -91,7 +115,8 @@ def threads(notes, replies):
     out = []
     for note in notes:
         thread = _message(note)
-        thread.update(subject=note.get("subject") or "",
+        group, own = group_of(note, task, version_ids)
+        thread.update(subject=note.get("subject") or "", group=group, own=own,
                       images=list(note.get("attachments") or []),
                       replies=by_note.get(note["id"], []))
         out.append(thread)
@@ -116,13 +141,19 @@ def load(sg, task_id):
     versions = sg.find("Version", [["sg_task", "is", link]], VERSION_FIELDS,
                        order=[{"field_name": "created_at", "direction": "desc"}],
                        limit=VERSION_LIMIT)
-    # Notes on the task, and notes on its Versions that do not name the task
-    # (written on the ShotGrid site's media player).
+    # Notes on the task; on its Versions without the task (written on the
+    # ShotGrid site's media player); and on its shot or asset, which is
+    # where the other tasks' notes and the shot's own are -- as in Flow.
     filters = [["tasks", "is", link]]
+    entity = task.get("entity")
+    if entity:
+        filters.append(["note_links", "is",
+                        {"type": entity["type"], "id": entity["id"]}])
     if versions:
-        filters = [{"filter_operator": "any", "filters": filters + [
-            ["note_links", "in", [{"type": "Version", "id": v["id"]}
-                                  for v in versions]]]}]
+        filters.append(["note_links", "in", [{"type": "Version", "id": v["id"]}
+                                             for v in versions]])
+    if len(filters) > 1:
+        filters = [{"filter_operator": "any", "filters": filters}]
     notes = sg.find("Note", filters, NOTE_FIELDS,
                     order=[{"field_name": "created_at", "direction": "desc"}])
     replies = []
@@ -133,7 +164,8 @@ def load(sg, task_id):
             REPLY_FIELDS,
             order=[{"field_name": "created_at", "direction": "asc"}])
     return {"task": task, "versions": versions,
-            "threads": threads(notes, replies)}
+            "threads": threads(notes, replies, task,
+                               [v["id"] for v in versions])}
 
 
 def statuses(sg):
@@ -173,12 +205,22 @@ def set_status(sg, task, code, note, login):
 
 
 def download_images(sg, thread, folder=None):
-    """Save a note's attachments to a new folder. Returns the folder."""
-    folder = folder or tempfile.mkdtemp(prefix="flow_note_%s_" % thread["id"])
+    """[path] of a note's attachments, each downloaded once into the note's
+    own folder (IMAGE_CACHE/<note id>, or folder)."""
+    folder = folder or os.path.join(IMAGE_CACHE, str(thread["id"]))
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    paths = []
     for image in thread["images"]:
         name = os.path.basename(image.get("name") or "attachment_%s" % image["id"])
-        sg.download_attachment(image, file_path=os.path.join(folder, name))
-    return folder
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            sg.download_attachment(image, file_path=path)
+        paths.append(path)
+    return paths
+
+
+IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".bmp")
 
 
 # -- Qt ---------------------------------------------------------------------
@@ -259,12 +301,12 @@ def _panel_class():
             nl.setContentsMargins(0, 4, 0, 0)
             self.notes = QtWidgets.QTreeWidget()
             self.notes.setHeaderLabels(["From", "When", "Note"])
-            self.notes.setRootIsDecorated(False)
             self.notes.setAlternatingRowColors(True)
             self.notes.currentItemChanged.connect(self._show_thread)
             nl.addWidget(self.notes, 2)
             self.thread = QtWidgets.QTextBrowser()
-            nl.addWidget(self.thread, 2)
+            self.thread.setOpenExternalLinks(True)   # an image opens full size
+            nl.addWidget(self.thread, 3)
             self.images_btn = QtWidgets.QPushButton("Open Images")
             self.images_btn.clicked.connect(self._open_images)
             nl.addWidget(self.images_btn)
@@ -331,26 +373,44 @@ def _panel_class():
         def _fill_notes(self):
             selected = self._current()
             self.notes.clear()
+            # One branch per task, this task's first; newest note first in each.
+            groups = {}
             for thread in self.data["threads"]:
-                first = (thread["subject"] or thread["text"]).splitlines()
-                extra = []
-                if thread["replies"]:
-                    extra.append("%d replies" % len(thread["replies"]))
-                if thread["images"]:
-                    extra.append("%d images" % len(thread["images"]))
-                item = QtWidgets.QTreeWidgetItem([
-                    thread["author"], thread["when"],
-                    (first[0] if first else "")
-                    + ("  [%s]" % ", ".join(extra) if extra else "")])
-                item.setData(0, QtCore.Qt.UserRole, thread["id"])
-                self.notes.addTopLevelItem(item)
-                if selected and thread["id"] == selected["id"]:
-                    self.notes.setCurrentItem(item)
+                groups.setdefault((not thread["own"], thread["group"]),
+                                  []).append(thread)
+            bold = QtGui.QFont()
+            bold.setBold(True)
+            for (other, name), members in sorted(groups.items()):
+                branch = QtWidgets.QTreeWidgetItem([
+                    "%s%s  (%d)" % (name, "" if other else " - this task",
+                                    len(members))])
+                branch.setFont(0, bold)
+                self.notes.addTopLevelItem(branch)
+                branch.setFirstColumnSpanned(True)    # only once in the tree
+                for thread in members:
+                    self._add_note(branch, thread, selected)
+            self.notes.expandAll()
             for column in (0, 1):
                 self.notes.resizeColumnToContents(column)
             if self.notes.currentItem() is None and self.notes.topLevelItemCount():
-                self.notes.setCurrentItem(self.notes.topLevelItem(0))
+                self.notes.setCurrentItem(self.notes.topLevelItem(0).child(0))
             self._show_thread()
+
+        def _add_note(self, branch, thread, selected):
+            first = (thread["subject"] or thread["text"]).splitlines()
+            extra = []
+            if thread["replies"]:
+                extra.append("%d replies" % len(thread["replies"]))
+            if thread["images"]:
+                extra.append("%d images" % len(thread["images"]))
+            item = QtWidgets.QTreeWidgetItem([
+                thread["author"], thread["when"],
+                (first[0] if first else "")
+                + ("  [%s]" % ", ".join(extra) if extra else "")])
+            item.setData(0, QtCore.Qt.UserRole, thread["id"])
+            branch.addChild(item)
+            if selected and thread["id"] == selected["id"]:
+                self.notes.setCurrentItem(item)
 
         def _fill_versions(self):
             self.versions.clear()
@@ -387,6 +447,11 @@ def _panel_class():
                 QtCore.QTimer.singleShot(
                     300, lambda: self._apply_thumbs(generation, wanted))
 
+        def resizeEvent(self, event):
+            QtWidgets.QWidget.resizeEvent(self, event)
+            # Pictures are sized to the view: redraw them at the new width.
+            QtCore.QTimer.singleShot(0, self._show_thread)
+
         # -- notes ----------------------------------------------------------
 
         def _current(self):
@@ -402,7 +467,8 @@ def _panel_class():
         def _show_thread(self, *args):
             thread = self._current()
             if not thread:
-                self.thread.setHtml("<i>No notes on this task yet.</i>")
+                self.thread.setHtml("<i>Select a note.</i>" if self.data["threads"]
+                                    else "<i>No notes on this task yet.</i>")
                 self.images_btn.setEnabled(False)
                 return
             parts = ["<p><b>%s</b></p>" % _html(thread["subject"])
@@ -411,16 +477,45 @@ def _panel_class():
                 parts.append("<p><b>%s</b> <span style='color:gray'>%s</span>"
                              "<br>%s</p>" % (_html(m["author"]), _html(m["when"]),
                                              _html(m["text"]).replace("\n", "<br>")))
+            parts += self._image_html(thread)
             self.thread.setHtml("".join(parts))
             self.images_btn.setEnabled(bool(thread["images"]))
             self.images_btn.setText("Open Images (%d)" % len(thread["images"]))
+
+        def _image_html(self, thread):
+            """The note's pictures (RV annotations) under its text.
+
+            shortcut: downloaded on the UI thread when a note is first
+            selected (an annotation PNG is about a second); thread it if
+            artists notice.
+            """
+            if not thread["images"]:
+                return []
+            try:
+                paths = self._busy(download_images, self.sg, thread)
+            except Exception as e:
+                return ["<p><i>Images not loaded: %s</i></p>" % _html(e)]
+            # Room for the scroll bar the picture itself brings in.
+            width = max(160, self.thread.viewport().width() - 24 -
+                        self.thread.verticalScrollBar().sizeHint().width())
+            out = []
+            for path in paths:
+                url = QtCore.QUrl.fromLocalFile(path).toString()
+                if path.lower().endswith(IMAGE_TYPES):
+                    out.append('<p><a href="%s"><img src="%s" width="%d"></a>'
+                               "</p>" % (url, url, width))
+                else:
+                    out.append('<p><a href="%s">%s</a></p>'
+                               % (url, _html(os.path.basename(path))))
+            return out
 
         def _open_images(self):
             thread = self._current()
             if not thread or not thread["images"]:
                 return
             try:
-                folder = self._busy(download_images, self.sg, thread)
+                folder = os.path.dirname(
+                    self._busy(download_images, self.sg, thread)[0])
                 subprocess.Popen(
                     [os.environ.get("FLOW_FILE_MANAGER", "xdg-open"), folder],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

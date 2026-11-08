@@ -263,6 +263,12 @@ class FakeShotgun:
         self.uploads.append((entity_id, path, field_name))
         return 555
 
+    def download_attachment(self, attachment, file_path=None):
+        self.calls.append(("download", attachment["id"], file_path))
+        with open(file_path, "wb") as f:
+            f.write(b"png")
+        return file_path
+
     def upload_thumbnail(self, entity_type, entity_id, path):
         self.calls.append(("upload_thumbnail", entity_type, entity_id, path))
         return 556

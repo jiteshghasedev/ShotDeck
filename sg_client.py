@@ -746,6 +746,10 @@ class SGClient:
             )
         return rows
 
+    def download_attachment(self, attachment, path):
+        """Save one of a Note's Attachments (an RV annotation) to path."""
+        return self.sg.download_attachment(attachment, file_path=path)
+
     def notes_by_user(self, user, project=None, days=30):
         """Notes this artist wrote recently -- the ones replies can arrive on.
 

@@ -15,6 +15,24 @@ From 1.3.1, `APP_VERSION` is the repo's release: the git tag is
 For each release: bump the number that changed, add a section here, commit,
 then tag it (`git tag v1.3.1`).
 
+## Flow 1.3.2, flow_dcc 1.5.0 (2026-11-09)
+
+FlowDash 1.2.0 shows the same note pictures in the browser.
+
+Flow
+- Task notes (the home page's Notes column) show each note's pictures --
+  RV annotations -- in its bubble. A click shows the picture full screen;
+  the arrow keys step through the note's others, Esc or a click closes.
+- Pictures are downloaded once per user, to `flow_note_images_<user>` in the
+  temp folder.
+
+flow_dcc
+- Task Panel: every note on the task's shot or asset now shows too, as in
+  Flow -- the shot's own notes and its other tasks' notes were missing.
+- Notes are grouped by the task they were written for, this task first.
+- A note's pictures (RV annotations) show under its text, sized to the
+  panel; a click opens one full size.
+
 ## Flow 1.3.1 (2026-11-09)
 
 `APP_VERSION` jumps from 1.1.0 to 1.3.1 to match the git tag `v1.3.1`.
