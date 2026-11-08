@@ -12,6 +12,17 @@ Two version numbers live in this repo:
 For each release: bump the number that changed, add a section here, commit,
 then tag it (`git tag v1.1.0`).
 
+## flow_dcc 1.3.0 (2026-11-08)
+
+- RV: **Flow > Send Annotations to ShotGrid...** sends every frame with a
+  drawing on it, not only the frame on screen. Each Version gets one Note:
+  - subject: `AD1030_v002 annotations by Priya, frames 1012, 1020`
+  - content: signed `Priya: ...` like every Flow note; the note text is
+    optional when frames are drawn on
+  - attachments: `AD1030_v002_annotation_f1012_priya.png`, one per frame
+  - links: the Version, its shot or asset, and its task
+- With nothing drawn, the frame on screen goes up, as before.
+
 ## Flow 1.1.0, flow_dcc 1.2.0 (2026-11-08)
 
 Commit fa25643. FlowDash 1.1.0 needs this version.

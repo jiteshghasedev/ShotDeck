@@ -168,7 +168,7 @@ def _version_from_path(path):
 def command(paths, mode="", notes=False):
     """The full argv for reviewing these paths, compare flag included.
 
-    notes=True loads Flow's "Send Note to ShotGrid" menu
+    notes=True loads Flow's "Send Annotations to ShotGrid" menu
     (rez/flow_dcc/startup/rv/flow_review.py) into RV.
     """
     if not paths:
@@ -190,7 +190,8 @@ def _notes_flags():
     """
     startup = os.path.join(config.DCC_SOURCE_ROOT, "startup", "rv")
     if not os.path.isfile(os.path.join(startup, "flow_review.py")):
-        log.warning("no %s -- RV opens without the Send Note menu", startup)
+        log.warning("no %s -- RV opens without the Send Annotations menu",
+                    startup)
         return []
     return ["-pyeval",
             f"import sys; sys.path.append({config.DCC_SOURCE_ROOT!r}); "
@@ -260,8 +261,8 @@ def open_versions(versions, mode="", project=None):
 def open_paths(paths, mode="", project=None, notes=None):
     """Same, for paths that did not come from a Version. Returns (pid, log_path).
 
-    notes: review_env() for paths that are Versions, which adds the Send Note
-    menu.
+    notes: review_env() for paths that are Versions, which adds the Send
+    Annotations menu.
     """
     cmd = command(paths, mode, notes=bool(notes))
     env = environment(project)
