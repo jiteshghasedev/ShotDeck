@@ -14,14 +14,16 @@ thumbnail last. The notes panel sits on the right, full screen or not.
 """
 
 import os
+import tempfile
 import time
 import urllib.error
 
-from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
+from PySide6.QtCore import Qt, QUrl, Signal, QPointF
+from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFrame, QSlider, QWidget, QButtonGroup, QMessageBox, QSizePolicy,
+    QColorDialog, QSpinBox,
 )
 
 import applog
@@ -151,6 +153,7 @@ class ImageCompare(QWidget):
     """Both frames, in whichever mode is selected, sharing zoom and pan."""
 
     wipe_moved = Signal(float)
+    drawn = Signal()                    # a stroke was finished, undone or cleared
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -160,6 +163,16 @@ class ImageCompare(QWidget):
         self.fit = True
         self.wipe = 0.5
         self.showing_b = False
+        # Annotation: strokes drawn over the picture, kept per frame so a note
+        # on frame 12 is not still on screen at frame 40.
+        # shortcut: points are stored relative to the widget, so a stroke
+        # drifts slightly if the window changes shape; store them in image
+        # space if reviewers resize mid-annotation.
+        self.drawing = False
+        self.pen_colour = QColor("#ff3b30")
+        self.pen_width = 4
+        self.frame = 0
+        self.strokes = {}               # frame -> [(QColor, width, [QPointF])]
         self.setMinimumHeight(280)
 
     def set_media(self, a, b):
@@ -192,12 +205,74 @@ class ImageCompare(QWidget):
     # -- mouse: drag the wipe, click to flip A/B, as in RV ------------------
 
     def mousePressEvent(self, event):
+        if self.drawing:
+            self.strokes.setdefault(self.frame, []).append(
+                (QColor(self.pen_colour), self.pen_width,
+                 [self._normalised(event)]))
+            self.update()
+            return
         if self.mode == AB:
             self.toggle()
         self._drag_wipe(event)
 
     def mouseMoveEvent(self, event):
+        if self.drawing:
+            if self.strokes.get(self.frame):
+                self.strokes[self.frame][-1][2].append(self._normalised(event))
+                self.update()
+            return
         self._drag_wipe(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.drawing and self.strokes.get(self.frame):
+            self.drawn.emit()
+
+    # -- annotation --------------------------------------------------------
+
+    def _normalised(self, event):
+        p = event.position()
+        return QPointF(p.x() / max(1, self.width()),
+                       p.y() / max(1, self.height()))
+
+    def set_drawing(self, on):
+        self.drawing = on
+        self.setCursor(Qt.CrossCursor if on else
+                       Qt.SplitHCursor if self.mode == WIPE else
+                       Qt.PointingHandCursor if self.mode == AB else
+                       Qt.ArrowCursor)
+
+    def set_frame(self, frame):
+        if frame != self.frame:
+            self.frame = frame
+            self.update()
+
+    def undo(self):
+        if self.strokes.get(self.frame):
+            self.strokes[self.frame].pop()
+            self.update()
+            self.drawn.emit()
+
+    def clear(self, frame=None):
+        frame = self.frame if frame is None else frame
+        if self.strokes.pop(frame, None):
+            self.update()
+            self.drawn.emit()
+
+    def annotated(self):
+        """True when the frame on screen has something drawn on it."""
+        return bool(self.strokes.get(self.frame))
+
+    def _paint_strokes(self, painter):
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        for colour, width, points in self.strokes.get(self.frame, []):
+            painter.setPen(QPen(colour, width, Qt.SolidLine, Qt.RoundCap,
+                                Qt.RoundJoin))
+            scaled = [QPointF(p.x() * w, p.y() * h) for p in points]
+            if len(scaled) == 1:
+                painter.drawPoint(scaled[0])
+            else:
+                painter.drawPolyline(scaled)
 
     def _drag_wipe(self, event):
         if self.mode == WIPE and self.width():
@@ -209,8 +284,11 @@ class ImageCompare(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(theme.SURFACE_SUNK))
-        if not self.a or not self.b:
-            return
+        if self.a and self.b:
+            self._paint_frames(painter)
+        self._paint_strokes(painter)
+
+    def _paint_frames(self, painter):
 
         if self.mode == SIDE_BY_SIDE:
             half = self.width() // 2
@@ -348,6 +426,8 @@ class VersionCompare(QDialog):
 
         self.image_view = ImageCompare()
         self.image_view.wipe_moved.connect(self._wipe_dragged)
+        self.image_view.drawn.connect(self._annotation_changed)
+        self._annotated_frame = None    # the frame whose drawing is in the notes
         left.addWidget(self.image_view, 1)
 
         self.wipe_slider = QSlider(Qt.Horizontal)
@@ -361,6 +441,7 @@ class VersionCompare(QDialog):
 
         left.addWidget(self._transport())
         left.addLayout(self._mode_bar())
+        left.addLayout(self._draw_bar())
         self.meta_host = self._metadata()
         left.addWidget(self.meta_host)
 
@@ -444,6 +525,94 @@ class VersionCompare(QDialog):
         bar.addStretch()
         return bar
 
+    def _draw_bar(self):
+        """Pen tools for marking up the frame, and sending it up as a note."""
+        bar = QHBoxLayout()
+        bar.addStretch()
+        self.draw_btn = self._button(
+            "✎ Draw", lambda: self.set_drawing(self.draw_btn.isChecked()),
+            "termBtn")
+        self.draw_btn.setCheckable(True)
+        self.draw_btn.setToolTip("Draw on the frame (D). Playback pauses.")
+        bar.addWidget(self.draw_btn)
+
+        self.colour_btn = self._button("", self._pick_colour)
+        self.colour_btn.setToolTip("Pen colour")
+        self.colour_btn.setFixedWidth(28)
+        self._show_colour()
+        bar.addWidget(self.colour_btn)
+
+        self.width_box = QSpinBox()
+        self.width_box.setRange(1, 40)
+        self.width_box.setValue(self.image_view.pen_width)
+        self.width_box.setSuffix(" px")
+        self.width_box.setToolTip("Pen size")
+        self.width_box.setFocusPolicy(Qt.NoFocus)
+        self.width_box.valueChanged.connect(
+            lambda v: setattr(self.image_view, "pen_width", v))
+        bar.addWidget(self.width_box)
+
+        undo = self._button("Undo", self.image_view.undo)
+        undo.setToolTip("Remove the last stroke on this frame (Ctrl+Z)")
+        bar.addWidget(undo)
+        bar.addWidget(self._button("Clear", self.image_view.clear))
+
+        bar.addStretch()
+        return bar
+
+    def set_drawing(self, on):
+        self.image_view.set_drawing(on)
+        self.draw_btn.setChecked(on)
+        if on:
+            self._pause()             # drawing on a moving frame is useless
+
+    def _pick_colour(self):
+        colour = QColorDialog.getColor(self.image_view.pen_colour, self,
+                                       "Pen colour")
+        if colour.isValid():
+            self.image_view.pen_colour = colour
+            self._show_colour()
+
+    def _show_colour(self):
+        self.colour_btn.setStyleSheet(
+            f"background: {self.image_view.pen_colour.name()};")
+
+    def _annotation_changed(self):
+        """Keep the notes panel's copy of the drawing in step with the screen.
+
+        Every stroke opens the notes with the frame attached; the reviewer
+        then posts it or discards it there. Undoing back to nothing drops it.
+        """
+        if self.image_view.annotated():
+            self._attach_annotation()
+        elif self._annotated_frame == self.image_view.frame:
+            self._annotated_frame = None
+            self.notes_panel._drop_attachment()
+
+    def _drawing_done(self, posted):
+        """Posted or discarded: either way it is off the picture."""
+        frame, self._annotated_frame = self._annotated_frame, None
+        if frame is not None:
+            self.image_view.blockSignals(True)
+            self.image_view.clear(frame)
+            self.image_view.blockSignals(False)
+
+    def _attach_annotation(self):
+        """The frame as seen here, drawing included, into the notes panel."""
+        self._pause()
+        fd, path = tempfile.mkstemp(prefix="flow_annotation_", suffix=".png")
+        os.close(fd)
+        if not self.image_view.grab().save(path, "PNG"):
+            os.remove(path)
+            QMessageBox.warning(self, "Attach to note",
+                                "Could not save the annotated frame.")
+            return
+        label = (f"Frame {self.image_view.frame}" if self.players
+                 else "Annotated frame")
+        self._annotated_frame = self.image_view.frame
+        self._set_notes_visible(True)
+        self.notes_panel.attach(path, label)
+
     def _open_in_rv(self):
         """Send the versions to RV in whatever mode is selected here.
 
@@ -496,6 +665,7 @@ class VersionCompare(QDialog):
         lay.addWidget(self.notes_switch)
 
         self.notes_panel = NotesPanel(self.sg, self.project, None)
+        self.notes_panel.drawing_done.connect(self._drawing_done)
         lay.addWidget(self.notes_panel, 1)
         return host
 
@@ -515,6 +685,8 @@ class VersionCompare(QDialog):
         self.media_a = VersionMedia(version_a)
         self.media_b = self.media_a if self.single else VersionMedia(version_b)
         self.image_view.set_media(self.media_a, self.media_b)
+        self.image_view.strokes = {}      # drawings belong to the old pair
+        self._annotated_frame = None
 
         title = "Version Player" if self.single else "Version Compare"
         self.setWindowTitle(title)
@@ -561,6 +733,8 @@ class VersionCompare(QDialog):
         version = self.version_b if side else self.version_a
         self.notes_panel.task = version.get(config.VERSION_TASK_FIELD)
         self.notes_panel.set_version(version)
+        if self.image_view.annotated():
+            self._attach_annotation()    # the drawing follows the notes shown
         for i, button in enumerate(self.notes_buttons):
             button.setChecked(i == side)
 
@@ -633,6 +807,10 @@ class VersionCompare(QDialog):
             self._toggle_play()
         elif key in (Qt.Key_Left, Qt.Key_Right) and self.players:
             self._step(-1 if key == Qt.Key_Left else 1)
+        elif key == Qt.Key_D:
+            self.draw_btn.click()
+        elif key == Qt.Key_Z and event.modifiers() & Qt.ControlModifier:
+            self.image_view.undo()
         elif key == Qt.Key_N:
             self.toggle_notes()
         elif key == Qt.Key_F:
@@ -847,6 +1025,7 @@ class VersionCompare(QDialog):
             self.scrub.setValue(position)
             self.scrub.blockSignals(False)
         frame = int(position / self._frame_ms) + 1
+        self.image_view.set_frame(frame)
         total = int(self.scrub.maximum() / self._frame_ms)
         self.time_label.setText(f"{frame} / {total}" if total else f"{frame}")
         # shortcut: B is pulled back to A when they drift over two frames, at

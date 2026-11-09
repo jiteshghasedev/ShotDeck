@@ -6,6 +6,8 @@ list above it is left alone, because an artist watching for a client note
 should not have their selection and filters thrown away every time.
 """
 
+import os
+
 import applog
 import config
 import notes_service
@@ -107,6 +109,8 @@ class NotesPanel(QWidget):
 
     posted = Signal()
     loaded = Signal()      # notes arrived; anything showing them can redraw
+    # The attached drawing is finished with: True posted, False discarded.
+    drawing_done = Signal(bool)
 
     def __init__(self, sg, project, task, parent=None):
         super().__init__(parent)
@@ -118,6 +122,7 @@ class NotesPanel(QWidget):
         self.threads = []
         self.replying_to = None
         self.editing = None
+        self.attachment = ""         # an annotated frame going up with the note
         self._jobs = set()
         self._request = 0
 
@@ -163,6 +168,14 @@ class NotesPanel(QWidget):
         lay.addWidget(self.compose)
 
         actions = QHBoxLayout()
+        self.attach_lbl = QLabel("")
+        self.attach_lbl.setObjectName("tileSub")
+        actions.addWidget(self.attach_lbl)
+        self.drop_btn = QPushButton("Discard drawing")
+        self.drop_btn.setObjectName("consoleBtn")
+        self.drop_btn.setToolTip("Throw the drawing away and post nothing")
+        self.drop_btn.clicked.connect(self._discard_drawing)
+        actions.addWidget(self.drop_btn)
         actions.addStretch()
         self.cancel_btn = QPushButton("Cancel reply")
         self.cancel_btn.setObjectName("consoleBtn")
@@ -190,6 +203,7 @@ class NotesPanel(QWidget):
     def set_version(self, version):
         self.version = version
         self._cancel_compose()
+        self._drop_attachment()
         enabled = bool(version)
         self.compose.setEnabled(enabled)
         self.post_btn.setEnabled(enabled)
@@ -289,7 +303,43 @@ class NotesPanel(QWidget):
 
     # -- composing ---------------------------------------------------------
 
+    def attach(self, path, label):
+        """Send this image up with the next new note, e.g. an annotated frame.
+
+        Only a new note carries it: ShotGrid replies have no attachments.
+        Called again on every stroke, so whatever is typed already stays.
+        """
+        if self.replying_to or self.editing:
+            self._cancel_compose()
+        self._drop_attachment()
+        self.attachment = path
+        self.attach_lbl.setText(f"📎 {label} attached")
+        self.attach_lbl.show()
+        self.drop_btn.show()
+        if not self.compose.toPlainText().strip():
+            self.compose.setPlainText(f"{label}: ")
+        self.post_btn.setText("Post Note + Drawing")
+
+    def _discard_drawing(self):
+        self._drop_attachment()
+        if self.compose.toPlainText().strip().endswith(":"):
+            self.compose.clear()          # only the "Frame N:" we typed
+        self.drawing_done.emit(False)
+
+    def _drop_attachment(self):
+        if self.attachment:
+            try:
+                os.remove(self.attachment)
+            except OSError:
+                pass
+        self.attachment = ""
+        self.attach_lbl.hide()
+        self.drop_btn.hide()
+        if not (self.replying_to or self.editing):
+            self.post_btn.setText("Post Note")
+
     def _start_reply(self, message):
+        self._drop_attachment()
         self.editing = None
         self.replying_to = message
         self.compose_label.setText(f"Reply to {message.author_name}")
@@ -298,6 +348,7 @@ class NotesPanel(QWidget):
         self.compose.setFocus()
 
     def _start_edit(self, message):
+        self._drop_attachment()
         self.replying_to = None
         self.editing = message
         self.compose_label.setText("Edit your note")
@@ -320,6 +371,7 @@ class NotesPanel(QWidget):
             return
         editing, replying = self.editing, self.replying_to
         version, project, task = self.version, self.project, self.task
+        attachment = self.attachment
         self.post_btn.setEnabled(False)
         self.status.setText("Posting…")
 
@@ -328,11 +380,15 @@ class NotesPanel(QWidget):
                 return self.service.edit(editing, text)
             if replying:
                 return self.service.reply(replying, text)
-            return self.service.add_note(project, version, text, task=task)
+            return self.service.add_note(project, version, text, task=task,
+                                         attachment=attachment)
 
         def done(_):
             self.post_btn.setEnabled(True)
             self._cancel_compose()
+            if attachment and attachment == self.attachment:
+                self._drop_attachment()
+                self.drawing_done.emit(True)
             self._cooldown.stop()           # the artist's own write, show it
             self.refresh()
             self.posted.emit()

@@ -820,6 +820,11 @@ class SGClient:
                  else f"Task {(task or {}).get('id')}")
         return self.sg.create("Note", data)
 
+    def attach_to_note(self, note_id, path):
+        """Upload a file (an annotated frame) as an Attachment on the Note."""
+        log.info("attaching %s to Note %s", os.path.basename(path), note_id)
+        return self.sg.upload("Note", note_id, path)
+
     def create_reply(self, note_id, content):
         data = {
             "entity": {"type": "Note", "id": note_id},

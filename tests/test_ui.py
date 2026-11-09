@@ -869,6 +869,119 @@ def test_dragging_on_the_picture_moves_the_wipe():
     assert dialog.wipe_slider.value() == 25
 
 
+def test_drawing_on_the_player_marks_up_the_frame_on_screen():
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QTest
+    dialog = _compare(_image_version("draw_v001", colour="#000000"), None)
+    view = dialog.image_view
+    view.resize(600, 300)
+    settle(200)
+    dialog.draw_btn.click()
+    assert view.drawing and dialog.draw_btn.isChecked()
+
+    w, h = view.width(), view.height()      # the layout may have resized it
+    QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(w // 4, h // 2))
+    QTest.mouseMove(view, QPoint(w * 3 // 4, h // 2))
+    QTest.mouseRelease(view, Qt.LeftButton, Qt.NoModifier,
+                       QPoint(w * 3 // 4, h // 2))
+    assert view.annotated()
+    image = QImage(view.size(), QImage.Format_RGB32)
+    view.render(image)
+    # Points are stored relative to the view, so sample its centre as it is now.
+    centre = image.pixelColor(view.width() // 2, view.height() // 2)
+    assert centre.red() > 200, "the stroke is painted"
+
+    view.set_frame(40)
+    assert not view.annotated(), "strokes belong to the frame they were on"
+    view.set_frame(0)
+    view.undo()
+    assert not view.annotated()
+
+
+def test_an_annotated_frame_goes_up_attached_to_the_note():
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    sg = fakes.FakeShotgun()
+    dialog = _compare(_image_version("attach_v001"), None, sg=sg)
+    view = dialog.image_view
+    view.resize(600, 300)
+    dialog._set_notes_visible(False)          # hidden: drawing brings it back
+    dialog.set_drawing(True)
+    QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+    QTest.mouseRelease(view, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+    path = dialog.notes_panel.attachment
+    assert path and os.path.isfile(path), "the stroke attaches itself"
+    assert dialog.notes_host.isVisible(), "and opens the notes"
+    assert dialog.notes_panel.compose.toPlainText().startswith("Annotated")
+    assert dialog.notes_panel.drop_btn.isVisible()
+
+    dialog.notes_panel._post()
+    settle()
+    note = [c for c in sg.calls if c[:2] == ("create", "Note")][-1][2]
+    uploads = [c for c in sg.calls if c[:2] == ("upload", "Note")]
+    assert uploads and uploads[0][3] == path
+    assert note["content"].startswith("Annotated")
+    assert not dialog.notes_panel.attachment and not os.path.exists(path)
+    assert not view.annotated(), "a posted drawing leaves the picture"
+
+
+def test_a_drawing_can_be_discarded_instead_of_posted():
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    sg = fakes.FakeShotgun()
+    dialog = _compare(_image_version("discard_v001"), None, sg=sg)
+    view = dialog.image_view
+    view.resize(600, 300)
+    dialog.set_drawing(True)
+    QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+    QTest.mouseRelease(view, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+    path = dialog.notes_panel.attachment
+
+    dialog.notes_panel.drop_btn.click()
+    assert not dialog.notes_panel.attachment and not os.path.exists(path)
+    assert not view.annotated(), "discarded means gone from the picture"
+    assert not dialog.notes_panel.compose.toPlainText()
+    assert not [c for c in sg.calls if c[:2] == ("create", "Note")]
+
+    QTest.mousePress(view, Qt.LeftButton, Qt.NoModifier, QPoint(60, 60))
+    QTest.mouseRelease(view, Qt.LeftButton, Qt.NoModifier, QPoint(60, 60))
+    view.undo()
+    assert not dialog.notes_panel.attachment, "undone to nothing, nothing to post"
+
+
+def test_double_click_opens_the_player_and_compare_offers_rv():
+    from ui import version_browser
+    sg = fakes.FakeShotgun()
+    for i in (1, 2):
+        sg.add_version(f"SH010_Comp_v00{i}")
+    browser = _browser(sg)
+    opened = []
+
+    class Recorder:
+        def __init__(self, sg, project, version_a, version_b, **kwargs):
+            opened.append((version_a, version_b))
+
+        def exec(self):
+            return 0
+
+    real = version_browser.VersionCompare
+    version_browser.VersionCompare = Recorder
+    try:
+        browser._open_row(browser.table.model().index(1, 0))
+    finally:
+        version_browser.VersionCompare = real
+    assert opened == [(browser._versions[1], None)]
+
+    browser.table.selectRow(0)
+    settle()
+    menu = browser.compare_btn.menu()
+    menu.aboutToShow.emit()
+    texts = [a.text() for a in menu.actions()]
+    assert "Compare With…" in texts
+    assert "Compare With… in RV (wipe)" in texts
+
+
 def test_full_screen_keeps_the_picture_and_the_notes():
     dialog = _compare(_image_version("full_a"), _image_version("full_b"))
     dialog.toggle_fullscreen()

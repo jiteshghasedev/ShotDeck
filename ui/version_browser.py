@@ -229,6 +229,9 @@ class VersionBrowser(QDialog):
         self.table.setItemDelegateForColumn(3, StatusPill(self.table))
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.itemSelectionChanged.connect(self._on_selected)
+        # Opening a version means watching it: straight into the player, where
+        # compare, annotation and Open in RV all are.
+        self.table.doubleClicked.connect(self._open_row)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.stack.addWidget(self.table)
@@ -296,6 +299,15 @@ class VersionBrowser(QDialog):
         self.play_btn.hide()
         actions.addWidget(self.play_btn)
 
+        self.player_btn = QPushButton("Open Player")
+        self.player_btn.setObjectName("consoleBtn")
+        self.player_btn.setToolTip(
+            "Play, compare and draw on this version (or double-click it)")
+        self.player_btn.clicked.connect(
+            lambda: self._play_in_flow(self._selected()))
+        self.player_btn.setEnabled(False)
+        actions.addWidget(self.player_btn)
+
         # RV is the review player; the inline Play above stays for a quick look
         # without leaving the browser.
         self.rv_btn = QPushButton("Open in RV")
@@ -304,11 +316,15 @@ class VersionBrowser(QDialog):
         self.rv_btn.hide()
         actions.addWidget(self.rv_btn)
 
-        self.compare_btn = QPushButton("Compare…")
+        # A menu, not a picker: the same compare choices as the right-click
+        # menu, in ShotDeck's player or in RV.
+        self.compare_btn = QPushButton("Compare ▾")
         self.compare_btn.setObjectName("consoleBtn")
         self.compare_btn.setEnabled(False)
-        self.compare_btn.clicked.connect(
-            lambda: self._pick_compare(self._selected()))
+        compare_menu = QMenu(self.compare_btn)
+        compare_menu.aboutToShow.connect(
+            lambda m=compare_menu: self._fill_compare_menu(m, self._selected()))
+        self.compare_btn.setMenu(compare_menu)
         actions.addWidget(self.compare_btn)
 
         self.publish_btn = QPushButton("Publish New Version")
@@ -516,6 +532,7 @@ class VersionBrowser(QDialog):
     def _on_selected(self):
         version = self._selected()
         self.open_btn.setEnabled(bool(version))
+        self.player_btn.setEnabled(bool(version))
         self.compare_btn.setEnabled(bool(version) and len(self._versions) > 1)
         self.notes.set_version(version)
         if not version:
@@ -680,7 +697,13 @@ class VersionBrowser(QDialog):
     def _add_compare_actions(self, menu, version):
         sub = QMenu("Compare", menu)
         menu.addMenu(sub)
+        self._fill_compare_menu(sub, version)
+        return sub
 
+    def _fill_compare_menu(self, sub, version):
+        sub.clear()
+        if not version:
+            return
         previous = self._previous_version(version)
         act = QAction(f"With previous ({previous.get('code')})" if previous
                       else "With previous", sub)
@@ -715,7 +738,12 @@ class VersionBrowser(QDialog):
                 lambda _=False, a=version, b=other:
                 self._open_in_rv([a, b], mode="wipe"))
             sub.addAction(act)
-        return sub
+        pick = QAction("Compare With… in RV (wipe)", sub)
+        pick.setEnabled(len(self._versions) > 1 and
+                        rv_player.playable(version))
+        pick.triggered.connect(
+            lambda _=False, v=version: self._pick_compare(v, in_rv=True))
+        sub.addAction(pick)
 
     def _previous_version(self, version):
         """The one published before it, by the same rule as Latest Version."""
@@ -746,9 +774,15 @@ class VersionBrowser(QDialog):
         VersionCompare(self.sg, self.project, version, None,
                        versions=self._versions, parent=self).exec()
 
-    def _pick_compare(self, version):
+    def _open_row(self, index):
+        if 0 <= index.row() < len(self._versions):
+            self._play_in_flow(self._versions[index.row()])
+
+    def _pick_compare(self, version, in_rv=False):
         """Any version on the list, not just the neighbouring one."""
         others = [v for v in self._versions if v["id"] != version["id"]]
+        if in_rv:
+            others = [v for v in others if rv_player.playable(v)]
         if not others:
             return
         labels = [f"{v.get('code')}  ·  {_when(v.get('created_at'))}"
@@ -756,8 +790,13 @@ class VersionBrowser(QDialog):
         choice, ok = QInputDialog.getItem(
             self, "Compare With", f"Compare {version.get('code')} with:",
             labels, 0, False)
-        if ok and choice in labels:
-            self._compare(version, others[labels.index(choice)])
+        if not ok or choice not in labels:
+            return
+        other = others[labels.index(choice)]
+        if in_rv:
+            self._open_in_rv([version, other], mode="wipe")
+        else:
+            self._compare(version, other)
 
     def _context_menu(self, pos):
         index = self.table.indexAt(pos)

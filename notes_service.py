@@ -254,11 +254,15 @@ class NotesService:
 
     # -- writing -----------------------------------------------------------
 
-    def add_note(self, project, version, content, subject="", task=None):
+    def add_note(self, project, version, content, subject="", task=None,
+                 attachment=""):
         content = (content or "").strip()
         if not content:
             raise ValueError("A note needs something in it.")
-        return self.sg.create_note(project, version, content, subject, task)
+        note = self.sg.create_note(project, version, content, subject, task)
+        if attachment:
+            self.sg.attach_to_note(note["id"], attachment)
+        return note
 
     def reply(self, note, content):
         content = (content or "").strip()
