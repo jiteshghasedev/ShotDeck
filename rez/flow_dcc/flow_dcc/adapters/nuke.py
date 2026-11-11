@@ -9,7 +9,7 @@ import os
 import sys
 
 from . import MENU_NAME, actions, common
-from .. import context, lock, paths, plates, publish
+from .. import context, lock, paths, picker, plates, publish
 
 # Nuke shows the logger in its terminal; a bare sys.stdout.write may not.
 log = logging.getLogger("flow")
@@ -73,31 +73,89 @@ def _after_startup(func):
 # -- shot setup -----------------------------------------------------------
 
 def setup_empty_script():
-    """Nuke opened empty on a shot task where this artist has no work file
-    yet: load the plate and movie, add a Write, and save it as their v0001
-    in the task's work folder, so the artist starts comping, not wiring.
+    """Nuke opened empty on a shot task.
 
-    An artist with a work file on the task gets their newest one opened
-    instead, and an asset task, which has no plate, goes the same way --
-    see common.start().
+    The shot's first Nuke script (no department folder has one yet) is built
+    and saved straight away: see new_script(). After that every launch asks,
+    in start_dialog(), which department and script to open, or to start a
+    new one. An asset task, which has no plate, goes through common.start().
     """
     if current_scene() or _has_nodes():
         return
     ctx = context.get()
     module = sys.modules[__name__]
-    if ctx.entity_type != "Shot" or not ctx.entity_root or \
-            not ctx.has_task or paths.artist_files(ctx):
+    if ctx.entity_type != "Shot" or not ctx.entity_root or not ctx.has_task:
         return common.start(module)
+    if getattr(module, "_flow_started", False):
+        return
     module._flow_started = True
     try:
-        # Saved first, so the Write is named after the real script.
-        path = publish.save_next_version(module, ctx)
-        setup_shot(quiet=True)
-        save_scene(path)
-        log.info("created %s", path)
-        _keep_open(path)
+        if any(paths.department_files(d, ctx) for d in departments(ctx)):
+            path = start_dialog()
+        else:
+            path = new_script()
+        if path:
+            _keep_open(path)
     except Exception as e:                       # never cost the artist Nuke
         log.warning("shot setup skipped: %s", e)
+
+
+def departments(ctx=None):
+    """The dialog's department list: the configured ones, plus the task's."""
+    ctx = ctx or context.get()
+    extra = [ctx.department] if ctx.department and \
+        ctx.department not in paths.DEPARTMENTS else []
+    return paths.DEPARTMENTS + extra
+
+
+def start_dialog():
+    """Pick a department, then open one of its scripts or start a new one.
+
+    The picked department is kept for the session (FLOW_DEPARTMENT), so
+    Save, Version Up, Publish and the Write all follow it.
+    """
+    ctx = context.get()
+    choice = picker.ask_start(departments(ctx), ctx.department,
+                              lambda d: paths.department_files(d, ctx))
+    if not choice:
+        return None
+    action, department, path = choice
+    os.environ["FLOW_DEPARTMENT"] = department
+    if action == "open":
+        return common.open_path(sys.modules[__name__], path)
+    return new_script()
+
+
+def new_script():
+    """Load the plate and movie, add a Write, and save it as this artist's
+    next version in the department's work folder (v0001 for an artist new
+    to it), so the artist starts comping, not wiring."""
+    nuke = _nuke()
+    module = sys.modules[__name__]
+    if current_scene() or _has_nodes():
+        if nuke.root().modified() and not common.discard_ok(
+                module, "a new script"):
+            return None
+        nuke.scriptClear()
+        lock.release_all()                      # nothing is open now
+    # Saved first, so the Write is named after the real script.
+    path = publish.save_next_version(module)
+    setup_shot(quiet=True)
+    save_scene(path)
+    log.info("created %s", path)
+    return path
+
+
+def action_load_file():
+    """The menu's Load File...: the launch dialog, on a shot task."""
+    ctx = context.get()
+    if ctx.entity_type != "Shot" or not ctx.has_task:
+        return common.load_file(sys.modules[__name__])
+    try:
+        return start_dialog()
+    except Exception as e:
+        message("Load File failed: {0}".format(e))
+        return None
 
 
 def _keep_open(path, delays=(1000, 3000, 6000, 10000)):

@@ -18,7 +18,7 @@ ENV = {"FLOW_ENTITY_TYPE": "Shot", "FLOW_ENTITY_NAME": "AD1030",
        "FLOW_TASK_ID": "42", "FLOW_STEP": "Anim", "FLOW_SOFTWARE": "maya",
        "FLOW_USER": "jitesh", "FLOW_PROJECT_CODE": "UAT6",
        "FLOW_SEQUENCE": "SEQ001"}
-STEM = "uat6_SEQ001_AD1030_anim"
+LEGACY = "uat6_SEQ001_AD1030_anim"
 
 
 def _with_shot(test):
@@ -48,19 +48,19 @@ def _touch(folder, name, mtime=100):
 
 @_with_shot
 def test_every_artists_files_are_listed_and_versions_are_per_artist(shot, work):
-    _touch(work, STEM + "_jitesh_v0001.ma", 100)
-    _touch(work, STEM + "_rahul_v0002.ma", 200)
-    _touch(work, STEM + "_rahul_v0002.ma~", 300)          # backup, not work
-    _touch(work, STEM + "_jitesh_v0003.mb", 300)          # other extension
-    _touch(work, "uat6_SEQ001_AD1030_layout_jitesh_v0009.ma")   # other task
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0001.ma", 100)
+    _touch(work, "SEQ001_AD1030_rahul_anim_v0002.ma", 200)
+    _touch(work, "SEQ001_AD1030_rahul_anim_v0002.ma~", 300)          # backup, not work
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0003.mb", 300)          # other extension
+    _touch(work, "SEQ001_AD1030_jitesh_layout_v0009.ma")   # other task
 
     files = paths.task_files()
     assert [(f["version"], f["user"]) for f in files] == \
         [(2, "rahul"), (1, "jitesh")]
-    assert files[0]["path"] == work + "/" + STEM + "_rahul_v0002.ma"
+    assert files[0]["path"] == work + "/" + "SEQ001_AD1030_rahul_anim_v0002.ma"
     assert [f["user"] for f in paths.artist_files()] == ["jitesh"]
     assert paths.existing_versions() == [1]               # rahul's v0002 is his
-    assert versioning.next_scene_path().endswith(STEM + "_jitesh_v0002.ma")
+    assert versioning.next_scene_path().endswith("SEQ001_AD1030_jitesh_anim_v0002.ma")
 
     rows = picker.rows(files)
     assert rows[0][:2] == ("v0002", "rahul") and rows[0][4].endswith(".ma")
@@ -103,7 +103,7 @@ class _Host(types.ModuleType):
 def test_the_first_launch_on_a_task_saves_an_empty_v0001(shot, work):
     host = _Host()
     path = common.start(host)
-    assert path == work + "/" + STEM + "_jitesh_v0001.ma"
+    assert path == work + "/" + "SEQ001_AD1030_jitesh_anim_v0001.ma"
     assert host.saved == [path] and os.path.isdir(work)
     assert common.start(host) is None and len(host.saved) == 1   # once
     assert os.path.isfile(lock.lock_path(path))           # and it is held
@@ -113,13 +113,13 @@ def test_the_first_launch_on_a_task_saves_an_empty_v0001(shot, work):
 
 @_with_shot
 def test_a_launch_opens_the_artists_newest_file_as_it_is(shot, work):
-    _touch(work, STEM + "_rahul_v0003.ma", 300)
-    _touch(work, STEM + "_jitesh_v0001.ma", 100)
-    _touch(work, STEM + "_jitesh_v0002.ma", 200)
+    _touch(work, "SEQ001_AD1030_rahul_anim_v0003.ma", 300)
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0001.ma", 100)
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0002.ma", 200)
     host = _Host()
     common.start(host)
     assert host.saved == [] and host.shown == []          # no picker, no new version
-    assert host.opened == [work + "/" + STEM + "_jitesh_v0002.ma"]
+    assert host.opened == [work + "/" + "SEQ001_AD1030_jitesh_anim_v0002.ma"]
 
     common.load_file(host)                  # the menu entry, any artist's file
     assert [f["version"] for f in host.shown[0]] == [3, 2, 1]
@@ -129,10 +129,10 @@ def test_a_launch_opens_the_artists_newest_file_as_it_is(shot, work):
 
 @_with_shot
 def test_an_artist_new_to_a_task_gets_their_own_v0001(shot, work):
-    _touch(work, STEM + "_rahul_v0003.ma", 300)
+    _touch(work, "SEQ001_AD1030_rahul_anim_v0003.ma", 300)
     host = _Host()
     path = common.start(host)
-    assert path == work + "/" + STEM + "_jitesh_v0001.ma"
+    assert path == work + "/" + "SEQ001_AD1030_jitesh_anim_v0001.ma"
     assert host.saved == [path] and host.opened == [] and host.shown == []
     lock.release_all()
 
@@ -152,10 +152,10 @@ def _foreign_lock(path, user, host="ws-14", pid=4242):
 
 @_with_shot
 def test_a_file_someone_else_has_open_cannot_be_opened(shot, work):
-    _touch(work, STEM + "_rahul_v0001.ma")
-    _touch(work, STEM + "_jitesh_v0002.ma")
-    rahuls, mine = (work + "/" + STEM + n for n in
-                    ("_rahul_v0001.ma", "_jitesh_v0002.ma"))
+    _touch(work, "SEQ001_AD1030_rahul_anim_v0001.ma")
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0002.ma")
+    rahuls, mine = (work + "/SEQ001_AD1030_" + n for n in
+                    ("rahul_anim_v0001.ma", "jitesh_anim_v0002.ma"))
     _foreign_lock(rahuls, "rahul")
 
     held = picker.rows(paths.task_files())[1][3]
@@ -178,8 +178,8 @@ def test_a_file_someone_else_has_open_cannot_be_opened(shot, work):
 
 @_with_shot
 def test_my_own_lock_from_another_machine_can_be_taken_over(shot, work):
-    _touch(work, STEM + "_jitesh_v0001.ma")
-    path = work + "/" + STEM + "_jitesh_v0001.ma"
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0001.ma")
+    path = work + "/" + "SEQ001_AD1030_jitesh_anim_v0001.ma"
     _foreign_lock(path, "jitesh")
 
     host = _Host()
@@ -195,9 +195,68 @@ def test_my_own_lock_from_another_machine_can_be_taken_over(shot, work):
 def test_a_crashed_session_on_this_machine_does_not_block(shot, work):
     if os.name != "posix":
         return                     # no safe liveness check on Windows
-    _touch(work, STEM + "_rahul_v0001.ma")
-    path = work + "/" + STEM + "_rahul_v0001.ma"
+    _touch(work, "SEQ001_AD1030_rahul_anim_v0001.ma")
+    path = work + "/" + "SEQ001_AD1030_rahul_anim_v0001.ma"
     _foreign_lock(path, "rahul", host=lock.me()["host"], pid=2 ** 22 + 7)
     assert lock.holder(path) is None
     assert common.open_path(_Host(), path) == path
     lock.release_all()
+
+
+@_with_shot
+def test_old_names_still_count_and_logins_may_hold_underscores(shot, work):
+    _touch(work, LEGACY + "_jitesh_v0003.ma", 100)        # named before 1.6
+    _touch(work, "SEQ001_AD1030_j_smith_anim_v0005.ma", 200)
+    files = paths.task_files()
+    assert [(f["version"], f["user"]) for f in files] == \
+        [(5, "j_smith"), (3, "jitesh")]
+    # jitesh's next file carries on from their old v0003, under the new name
+    assert versioning.next_scene_path() == \
+        work + "/SEQ001_AD1030_jitesh_anim_v0004.ma"
+
+
+@_with_shot
+def test_a_picked_department_has_its_own_folder_and_versions(shot, work):
+    roto = shot + "/maya/scenes/roto"
+    _touch(roto, "SEQ001_AD1030_jitesh_roto_v0002.ma")
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0007.ma")
+    assert [f["version"] for f in paths.department_files("Roto")] == [2]
+    os.environ["FLOW_DEPARTMENT"] = "roto"
+    try:
+        assert versioning.next_scene_path() == \
+            roto + "/SEQ001_AD1030_jitesh_roto_v0003.ma"
+    finally:
+        del os.environ["FLOW_DEPARTMENT"]
+    assert paths.work_dir() == work                       # back to the step
+
+
+def test_the_launch_dialog_lists_a_departments_files_and_answers():
+    from PySide6 import QtCore, QtWidgets
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    files = {"comp": [{"path": "/c/a_v0002.nk", "name": "a_v0002.nk",
+                       "version": 2, "user": "rahul", "mtime": 100}]}
+    seen = []
+
+    def press(label, department=None):
+        def go():
+            dialog = next(w for w in app.topLevelWidgets()
+                          if isinstance(w, QtWidgets.QDialog) and w.isVisible())
+            boxes = dialog.findChildren(QtWidgets.QComboBox)
+            if department:
+                boxes[0].setCurrentText(department)
+            buttons = {b.text(): b for b in
+                       dialog.findChildren(QtWidgets.QPushButton)}
+            seen.append((boxes[1].count(), buttons["Open"].isEnabled()))
+            buttons[label].click()
+        QtCore.QTimer.singleShot(0, go)
+
+    depts = ["roto", "comp"]
+    press("Open")
+    assert picker.ask_start(depts, "comp", lambda d: files.get(d, [])) == \
+        ("open", "comp", "/c/a_v0002.nk")
+    press("New", department="roto")
+    assert picker.ask_start(depts, "comp", lambda d: files.get(d, [])) == \
+        ("new", "roto", None)
+    assert seen == [(1, True), (0, False)]   # roto is empty: only New
+    press("Cancel")
+    assert picker.ask_start(depts, "comp", lambda d: []) is None

@@ -72,3 +72,58 @@ def ask(files, title="Flow: Load File"):
         return None
     index = tree.indexOfTopLevelItem(tree.currentItem())
     return files[index]["path"] if index >= 0 else None
+
+
+def ask_start(departments, current, files_for, title="Flow: Open Script"):
+    """Department and file dropdowns, with Open and New.
+
+    files_for(department) gives that department folder's task_files().
+    Returns ("open", department, path), ("new", department, None), or None
+    on cancel. Raises ImportError when the host has no Qt.
+    """
+    try:
+        from PySide6 import QtWidgets
+    except ImportError:
+        from PySide2 import QtWidgets
+
+    dialog = QtWidgets.QDialog(QtWidgets.QApplication.activeWindow())
+    dialog.setWindowTitle(title)
+    dialog.resize(560, 140)
+    form = QtWidgets.QFormLayout(dialog)
+    dept_box = QtWidgets.QComboBox()
+    dept_box.addItems(departments)
+    file_box = QtWidgets.QComboBox()
+    form.addRow("Department", dept_box)
+    form.addRow("File", file_box)
+
+    buttons = QtWidgets.QDialogButtonBox()
+    open_button = buttons.addButton("Open", QtWidgets.QDialogButtonBox.AcceptRole)
+    new_button = buttons.addButton("New", QtWidgets.QDialogButtonBox.ActionRole)
+    buttons.addButton(QtWidgets.QDialogButtonBox.Cancel)
+    form.addRow(buttons)
+
+    shown = []
+    choice = []
+
+    def refill(_=None):
+        shown[:] = files_for(dept_box.currentText())
+        file_box.clear()
+        file_box.addItems([r[4] + "   " + label(r) for r in rows(shown)])
+        open_button.setEnabled(bool(shown))
+
+    def pick(action):
+        path = shown[file_box.currentIndex()]["path"] \
+            if action == "open" and shown else None
+        choice[:] = [(action, dept_box.currentText(), path)]
+        dialog.accept()
+
+    dept_box.currentIndexChanged.connect(refill)
+    open_button.clicked.connect(lambda: pick("open"))
+    new_button.clicked.connect(lambda: pick("new"))
+    buttons.rejected.connect(dialog.reject)
+    dept_box.setCurrentIndex(max(0, dept_box.findText(current)))
+    refill()
+
+    run = getattr(dialog, "exec", None) or dialog.exec_
+    run()
+    return choice[0] if choice else None

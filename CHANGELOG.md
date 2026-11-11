@@ -15,6 +15,25 @@ From 1.3.1, `APP_VERSION` is the repo's release: the git tag is
 For each release: bump the number that changed, add a section here, commit,
 then tag it (`git tag v1.3.1`).
 
+## flow_dcc 1.6.0 (unreleased)
+
+flow_dcc
+- Work files are named `<sequence>_<shot>_<login>_<department>_v0001`
+  (for example `SEQ001_AD1030_jitesh_comp_v0001.nk`), in every DCC. The
+  project code is gone from the name. Files named the old way are still
+  listed in Load File, and an artist's next version carries on from them.
+- Nuke on a shot: the shot's first Nuke script is still built (plate, movie,
+  Write) and saved as the artist's v0001. Once any department folder has a
+  script, Nuke opens with a dialog instead: pick a department (roto, prep,
+  comp, lighting, asset, plus the task's own step), then Open one of its
+  scripts or New. New builds a script with the plate and Write, saved as
+  the artist's next version in that department (v0001 for an artist new to
+  it). Load File... in the 5and8 menu opens the same dialog.
+- The picked department is kept for the session, so Save, Version Up,
+  Publish and the Write's render path all use its folder,
+  `<shot>/nuke/<department>/scene`. Set the list with
+  `FLOW_DEPARTMENTS=roto,prep,comp,lighting,asset`.
+
 ## Flow 1.3.2, flow_dcc 1.5.0 (2026-11-09)
 
 FlowDash 1.2.0 shows the same note pictures in the browser.

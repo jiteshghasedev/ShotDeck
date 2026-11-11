@@ -9,6 +9,7 @@ Only the leaf -- which subfolder and which file extension a given DCC uses --
 is decided here, and it matches config.ENTITY_SUBFOLDERS in the app.
 """
 
+import copy
 import os
 import re
 
@@ -91,8 +92,14 @@ DEFAULT_PUBLISH_LAYOUT = "{software}/{step}/publish"
 
 VERSION_RE = re.compile(r"_v(\d+)", re.IGNORECASE)
 
-# uat6_SEQ001_AD1030_lighting_jitesh_v0001.ma
+# SEQ001_AD1030_jitesh_lighting_v0001.ma
 VERSION_PADDING = 4
+
+# What Nuke's launch dialog offers to work in. A task's own step is added to
+# these when it is not one of them.
+DEPARTMENTS = [d.strip().lower() for d in os.environ.get(
+    "FLOW_DEPARTMENTS", "roto,prep,comp,lighting,asset").split(",")
+    if d.strip()]
 
 
 def _layout(software):
@@ -112,7 +119,7 @@ def work_dir(ctx=None):
         return None
 
     template, _ = _layout(ctx.software)
-    relative = template.format(step=(ctx.step or "").lower(),
+    relative = template.format(step=ctx.department,
                                software=normalise(ctx.software) or "dcc")
     # Collapse the empty {step} rather than leaving a // in the path.
     parts = [p for p in relative.split("/") if p]
@@ -128,7 +135,7 @@ def publish_dir(ctx=None):
 
     template = PUBLISH_LAYOUT.get(normalise(ctx.software),
                                   DEFAULT_PUBLISH_LAYOUT)
-    relative = template.format(step=(ctx.step or "").lower(),
+    relative = template.format(step=ctx.department,
                                software=normalise(ctx.software) or "dcc")
     parts = [p for p in relative.split("/") if p]
     return "/".join([root] + parts)
@@ -166,36 +173,39 @@ def extension(ctx=None):
 
 
 def scene_stem(ctx=None):
-    """`uat6_SEQ001_AD1030_lighting_jitesh` -- everything but the version.
+    """`SEQ001_AD1030_jitesh_lighting` -- everything but the version.
 
-    Every component comes from the launch context; nothing here is entered by
-    an artist or inferred from the open scene. Case follows the source: the
-    project code and step are lowercased because that is how they appear in
-    the paths, while the sequence and shot keep ShotGrid's own casing.
+    Sequence, shot (or asset), artist login, department. Every component
+    comes from the launch context; nothing here is entered by an artist or
+    inferred from the open scene. The department is lowercased because that
+    is how it appears in the paths, while the sequence and shot keep
+    ShotGrid's own casing.
 
     A component the launch did not carry is dropped rather than filled with a
     placeholder -- a name with a gap is still traceable, a name with "None" in
     it is not.
     """
     ctx = ctx or context.get()
-    bits = _task_bits(ctx) + [ctx.user or ""]
+    bits = _task_bits(ctx) + [ctx.user or "", ctx.department]
     return "_".join(b for b in bits if b) or "untitled"
 
 
 def task_prefix(ctx=None):
-    """`uat6_SEQ001_AD1030_lighting` -- the stem without the artist, shared
-    by every artist's files on this task."""
+    """`SEQ001_AD1030` -- the part of the name every artist's files on this
+    shot share."""
     ctx = ctx or context.get()
     return "_".join(b for b in _task_bits(ctx) if b) or "untitled"
 
 
 def _task_bits(ctx):
-    return [
-        (ctx.project_code or "").lower(),
-        ctx.sequence or "",
-        ctx.entity_name or "",
-        (ctx.step or "").lower(),
-    ]
+    return [ctx.sequence or "", ctx.entity_name or ""]
+
+
+def _legacy_prefix(ctx):
+    """Before flow_dcc 1.6: `uat6_SEQ001_AD1030_lighting`, artist after it."""
+    bits = [(ctx.project_code or "").lower()] + _task_bits(ctx) + \
+        [ctx.department]
+    return "_".join(b for b in bits if b) or "untitled"
 
 
 def scene_name(version, ctx=None, ext=None):
@@ -231,13 +241,22 @@ def artist_files(ctx=None, ext=None):
     return [f for f in task_files(ctx, ext) if (f["user"] or "").lower() == me]
 
 
+def department_files(department, ctx=None, ext=None):
+    """task_files() of another department's folder on the same shot."""
+    ctx = copy.copy(ctx or context.get())
+    ctx.department = (department or "").lower()
+    return task_files(ctx, ext)
+
+
 def task_files(ctx=None, ext=None):
     """Every artist's work files for this task, newest version first.
 
-    Each is {"path", "name", "version", "user", "mtime"}. Matches on the task
-    prefix so an unrelated scene in a shared folder is not counted. The user
-    is the artist the file is named after, which is who saved it through Flow;
-    a file without one falls back to its owner on disk.
+    Each is {"path", "name", "version", "user", "mtime"}. Matches on the
+    shot and department so an unrelated scene in a shared folder is not
+    counted. The user is the artist the file is named after, which is who
+    saved it through Flow; a file without one falls back to its owner on
+    disk. Files named the pre-1.6 way are listed too, and still count towards
+    the artist's next version.
     """
     folder = work_dir(ctx)
     if not folder or not os.path.isdir(folder):
@@ -246,15 +265,19 @@ def task_files(ctx=None, ext=None):
     ctx = ctx or context.get()
     if ext is None:
         ext = extension(ctx)
-    pattern = re.compile(
-        r"^{0}(?:_(?P<user>.+?))?_v(?P<version>\d+){1}$".format(
-            re.escape(task_prefix(ctx)),
-            re.escape(ext) if ext else r"(?:\.[^.]+)?"),
-        re.IGNORECASE)
+    tail = r"_v(?P<version>\d+){0}$".format(
+        re.escape(ext) if ext else r"(?:\.[^.]+)?")
+    dept = "_" + re.escape(ctx.department) if ctx.department else ""
+    patterns = [
+        re.compile(r"^{0}_(?P<user>.+?){1}{2}".format(
+            re.escape(task_prefix(ctx)), dept, tail), re.IGNORECASE),
+        re.compile(r"^{0}(?:_(?P<user>.+?))?{1}".format(
+            re.escape(_legacy_prefix(ctx)), tail), re.IGNORECASE),
+    ]
 
     found = []
     for name in os.listdir(folder):
-        match = pattern.match(name)
+        match = patterns[0].match(name) or patterns[1].match(name)
         if not match:
             continue
         path = folder + "/" + name

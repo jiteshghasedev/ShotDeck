@@ -8,7 +8,7 @@ import config
 
 sys.path.insert(0, config.DCC_SOURCE_ROOT)
 
-from flow_dcc import lock, plates  # noqa: E402
+from flow_dcc import lock, picker, plates  # noqa: E402
 
 
 def _touch(root, rel, mtime):
@@ -186,6 +186,7 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
     kept = []
     real_keep_open, adapter._keep_open = adapter._keep_open, kept.append
     real_open = adapter.open_scene
+    real_ask = picker.ask_start
     try:
         adapter.setup_empty_script()
         read, movie, write = made
@@ -194,7 +195,7 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert movie.Class() == "Read" and movie["file"].value().endswith(
             "/elements/plates/bg/bg.mov")
         work = env["FLOW_ENTITY_ROOT"] + "/nuke/comp/scene/"
-        script = work + "uat6_SEQ001_AD1030_comp_jitesh_v0001.nk"
+        script = work + "SEQ001_AD1030_jitesh_comp_v0001.nk"
         assert fake.saved == [script, script]   # named, then with the nodes
         assert kept == [script]                 # watched while Nuke starts
         assert (read["first"].value(), read["last"].value()) == (1001, 1050)
@@ -203,11 +204,11 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert root["format"].value() == "Flow_640x480"     # named, no warning
         assert fake.added_formats == ["640 480 1.0 Flow_640x480"]
         assert write.inputs == [read]
-        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/uat6_SEQ001_AD1030_comp_jitesh_v0001/"             "uat6_SEQ001_AD1030_comp_jitesh_v0001.%04d.exr"
+        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/SEQ001_AD1030_jitesh_comp_v0001/"             "SEQ001_AD1030_jitesh_comp_v0001.%04d.exr"
 
         fake.allNodes = lambda *a: [write]          # Version Up re-points it
-        adapter.save_scene(work + "uat6_SEQ001_AD1030_comp_jitesh_v0002.nk")
-        assert "/uat6_SEQ001_AD1030_comp_jitesh_v0002/" in write["file"].value()
+        adapter.save_scene(work + "SEQ001_AD1030_jitesh_comp_v0002.nk")
+        assert "/SEQ001_AD1030_jitesh_comp_v0002/" in write["file"].value()
         fake.saved.pop()
 
         existing = list(made)
@@ -222,10 +223,30 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         opened = []
         adapter.open_scene = lambda path: opened.append(path) or path
         adapter._flow_started = False
-        adapter.setup_empty_script()      # the artist already has a work file
+        asked = []
+
+        def ask(departments, current, files_for):
+            asked.append((departments, current, files_for("comp")))
+            return ("open", "comp", files_for("comp")[0]["path"])
+        picker.ask_start = ask
+        adapter.setup_empty_script()      # the shot has a script: the dialog
         assert made == [] and len(fake.saved) == 2
         assert opened == [script]         # opened as is, no new version
+        departments, current, files = asked[0]
+        assert departments == ["roto", "prep", "comp", "lighting", "asset"]
+        assert current == "comp" and [f["path"] for f in files] == [script]
+
+        lock.release_all()
+        picker.ask_start = lambda *a: ("new", "roto", None)
+        adapter.action_load_file()        # New, in another department
+        roto = env["FLOW_ENTITY_ROOT"] + \
+            "/nuke/roto/scene/SEQ001_AD1030_jitesh_roto_v0001.nk"
+        assert fake.saved[2:] == [roto, roto]   # with a plate and a Write
+        assert [n.Class() for n in made] == ["Read", "Read", "Write"]
+        assert "/SEQ001_AD1030_jitesh_roto_v0001/" in made[2]["file"].value()
     finally:
+        picker.ask_start = real_ask
+        os.environ.pop("FLOW_DEPARTMENT", None)
         adapter.open_scene = real_open
         lock.release_all()
         adapter._keep_open = real_keep_open    # its timers outlive the fake

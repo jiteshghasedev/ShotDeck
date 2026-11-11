@@ -38,6 +38,9 @@ class Context(object):
         self.task_id = task.get("id") or _int("FLOW_TASK_ID")
         self.task_name = task.get("name") or _env("FLOW_TASK_NAME")
         self.step = task.get("step") or _env("FLOW_STEP")
+        # The folder and file-name department: the task's step unless the
+        # artist picked another one (roto, prep...) in Nuke's launch dialog.
+        self.department = (_env("FLOW_DEPARTMENT") or self.step or "").lower()
         self.entity_type = task.get("entity_type") or _env("FLOW_ENTITY_TYPE")
         self.entity_id = task.get("entity_id") or _int("FLOW_ENTITY_ID")
         self.entity_name = task.get("entity_name") or _env("FLOW_ENTITY_NAME")

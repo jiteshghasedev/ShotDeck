@@ -20,7 +20,7 @@ import os
 
 from . import context, deadline, paths, publish, versioning
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 __all__ = ["context", "deadline", "paths", "publish", "versioning",
            "install", "adapter", "log"]
