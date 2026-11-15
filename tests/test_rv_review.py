@@ -109,3 +109,38 @@ def _check_menu_and_review_env():
                                    "code": "AD1030_v002", "entity": SHOT,
                                    "task": TASK}]
     assert flow_review.version_for("/a.mov", review["versions"])["id"] == 2
+
+
+def test_annotate_text_defaults_are_written_once():
+    import types
+    store = {}
+    commands = types.SimpleNamespace(
+        readSettings=lambda g, n, d: store.get((g, n), d),
+        writeSettings=lambda g, n, v: store.__setitem__((g, n), v))
+    sys.modules["rv"] = types.SimpleNamespace(commands=commands)
+    try:
+        flow_review._annotate_text_defaults()
+        assert store[("Annotate", "text_color")] == flow_review.TEXT_RGBA
+        assert abs(store[("Annotate", "text_size")] - 62.4 / 1080) < 1e-9
+        store[("Annotate", "text_color")] = [1, 1, 1, 1]   # reviewer's pick
+        flow_review._annotate_text_defaults()
+        assert store[("Annotate", "text_color")] == [1, 1, 1, 1]
+    finally:
+        del sys.modules["rv"]
+
+
+def test_the_note_box_is_yellow_and_larger():
+    from PySide6 import QtCore, QtWidgets
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    seen = []
+
+    def answer():
+        dialog = next(w for w in app.topLevelWidgets()
+                      if isinstance(w, QtWidgets.QInputDialog)
+                      and w.isVisible())
+        seen.append(dialog.styleSheet())
+        dialog.setTextValue("Edge flickers")
+        dialog.accept()
+    QtCore.QTimer.singleShot(0, answer)
+    assert flow_review._ask_note(None, "Note:") == ("Edge flickers", True)
+    assert flow_review.TEXT_COLOR in seen[0] and "font-size" in seen[0]

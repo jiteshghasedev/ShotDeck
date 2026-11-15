@@ -180,8 +180,7 @@ class FakeShotgun:
                 return [u for u in self.users if u["id"] in wanted]
             # The bootstrap looks the artist up by email, so the fake has to
             # answer that too or every integration path runs without an owner.
-            return [u for u in self.users
-                    if all(u.get(f[0]) == f[2] for f in simple)]
+            return [u for u in self.users if _matches(u, simple)]
         if entity_type == "Project":
             # The status/template filters are the site's business; the fake
             # only ever holds projects a test put there.

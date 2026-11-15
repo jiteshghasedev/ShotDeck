@@ -46,6 +46,11 @@ class Context(object):
         self.entity_name = task.get("entity_name") or _env("FLOW_ENTITY_NAME")
         self.sequence = data.get("sequence") or _env("FLOW_SEQUENCE")
         self.user = _env("FLOW_USER")
+        # The name in file names: Flow exports the ShotGrid first name,
+        # lowercased. A launch from an older Flow falls back to the login
+        # before any dot (jitesh.g -> jitesh).
+        self.artist = (_env("FLOW_ARTIST")
+                       or self.user.split(".")[0]).lower()
         self.site = data.get("site") or _env("FLOW_SITE")
         # Written by Flow, which already knows the templates. The DCC side
         # deliberately does not re-derive it -- one convention, one place.
@@ -87,6 +92,14 @@ class Context(object):
             ("User", self.user),
         ]
         return "\n".join("{0:<12}{1}".format(k, v or "-") for k, v in rows)
+
+
+def my_names(ctx):
+    """Every name this artist's files may carry: the artist name, and the
+    login (and its part before a dot) that files before 1.7 were saved
+    under."""
+    names = [ctx.artist, ctx.user, ctx.user.split(".")[0]]
+    return [n for n in names if n]
 
 
 def _env(name):

@@ -15,7 +15,40 @@ From 1.3.1, `APP_VERSION` is the repo's release: the git tag is
 For each release: bump the number that changed, add a section here, commit,
 then tag it (`git tag v1.3.1`).
 
-## flow_dcc 1.6.0 (unreleased)
+## Flow 1.3.3, flow_dcc 1.7.0 (unreleased)
+
+Flow
+- Launches export `FLOW_ARTIST`: the artist's ShotGrid first name,
+  lowercased (`Jitesh Ghase` gives `jitesh`). When another active user has
+  the same first name, the surname initial is added (`jiteshg`).
+
+flow_dcc
+- Work files are named `<shot>_<artist>_<department>_v0001`, for example
+  `AD1050_nanda_MM_v0001.nk`. The sequence is gone (client shot codes
+  already carry one). Matchmove is written `MM` and animation `Anim`; every
+  other department keeps its name. Folders keep ingest's full names
+  (`nuke/matchmove/scene`). Files named the 1.6 way, or under the login,
+  still count, and the artist's next version carries on from them.
+- Opening another artist's file asks once: save a copy as yours? Yes saves
+  it as your next version, and the Write renders under your name.
+- The department list is comp, prep, roto, lighting, asset, layout, fx,
+  cloth, groom, rig, matchmove, animation (`FLOW_DEPARTMENTS`).
+- Nuke: 5and8 > Open Sequence Review... builds a lead's script for the
+  shot's sequence: each shot the lead reviews (Task reviewers), or every
+  shot when the box is ticked, gets a backdrop with its plate, movie,
+  a RotoPaint and an annotation Write. Saved to
+  `<sequence>/nuke/review/<SEQ>_review_<artist>_v0001.nk`.
+- Rendering an annotation Write writes JPEGs to
+  `<shot>/elements/images/annotation/<dept>/<shot>_<artist>_<dept>_annot_<YYYYMMDD_HHMM>/`
+  and posts them as a Note on the Shot, with the Write's "Note to artist"
+  text. If ShotGrid is down the frames are still written and the Note waits
+  on this machine until 5and8 > Retry Pending Notes.
+- Nuke: 5and8 > Create Annotation Folders makes the department folders.
+- RV: the Send Annotations note box and the annotate text tool write
+  yellow text, 30% larger than RV's default. The tool default is set once,
+  so a colour the reviewer picks afterwards sticks.
+
+## flow_dcc 1.6.0 (not released)
 
 flow_dcc
 - Work files are named `<sequence>_<shot>_<login>_<department>_v0001`

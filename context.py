@@ -26,7 +26,7 @@ CONTEXT_DIR = os.environ.get(
 CONTEXT_MAX_AGE_SECONDS = 7 * 24 * 3600
 
 
-def build(project, software, task=None, login=None, email=None):
+def build(project, software, task=None, login=None, email=None, artist=None):
     """Assemble the context dictionary for one launch."""
     entity = (task or {}).get("entity") or {}
     step = (task or {}).get("step") or {}
@@ -50,6 +50,8 @@ def build(project, software, task=None, login=None, email=None):
         "user": {
             "login": login or getpass.getuser(),
             "email": email or "",
+            # Lowercase ShotGrid first name: what work files are named after.
+            "artist": artist or "",
         },
         "project": {
             "id": project["id"],
@@ -95,6 +97,7 @@ def env(ctx, path):
         "FLOW_SITE": ctx["site"],
         "FLOW_USER": ctx["user"]["login"],
         "FLOW_USER_EMAIL": ctx["user"]["email"],
+        "FLOW_ARTIST": ctx["user"].get("artist") or "",
         "FLOW_PROJECT_ID": str(ctx["project"]["id"]),
         "FLOW_PROJECT_NAME": ctx["project"]["name"],
         "FLOW_PROJECT_CODE": ctx["project"]["code"],

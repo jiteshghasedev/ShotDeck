@@ -48,19 +48,19 @@ def _touch(folder, name, mtime=100):
 
 @_with_shot
 def test_every_artists_files_are_listed_and_versions_are_per_artist(shot, work):
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0001.ma", 100)
-    _touch(work, "SEQ001_AD1030_rahul_anim_v0002.ma", 200)
-    _touch(work, "SEQ001_AD1030_rahul_anim_v0002.ma~", 300)          # backup, not work
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0003.mb", 300)          # other extension
-    _touch(work, "SEQ001_AD1030_jitesh_layout_v0009.ma")   # other task
+    _touch(work, "AD1030_jitesh_Anim_v0001.ma", 100)
+    _touch(work, "AD1030_rahul_Anim_v0002.ma", 200)
+    _touch(work, "AD1030_rahul_Anim_v0002.ma~", 300)          # backup, not work
+    _touch(work, "AD1030_jitesh_Anim_v0003.mb", 300)          # other extension
+    _touch(work, "AD1030_jitesh_layout_v0009.ma")   # other task
 
     files = paths.task_files()
     assert [(f["version"], f["user"]) for f in files] == \
         [(2, "rahul"), (1, "jitesh")]
-    assert files[0]["path"] == work + "/" + "SEQ001_AD1030_rahul_anim_v0002.ma"
+    assert files[0]["path"] == work + "/" + "AD1030_rahul_Anim_v0002.ma"
     assert [f["user"] for f in paths.artist_files()] == ["jitesh"]
     assert paths.existing_versions() == [1]               # rahul's v0002 is his
-    assert versioning.next_scene_path().endswith("SEQ001_AD1030_jitesh_anim_v0002.ma")
+    assert versioning.next_scene_path().endswith("AD1030_jitesh_Anim_v0002.ma")
 
     rows = picker.rows(files)
     assert rows[0][:2] == ("v0002", "rahul") and rows[0][4].endswith(".ma")
@@ -103,7 +103,7 @@ class _Host(types.ModuleType):
 def test_the_first_launch_on_a_task_saves_an_empty_v0001(shot, work):
     host = _Host()
     path = common.start(host)
-    assert path == work + "/" + "SEQ001_AD1030_jitesh_anim_v0001.ma"
+    assert path == work + "/" + "AD1030_jitesh_Anim_v0001.ma"
     assert host.saved == [path] and os.path.isdir(work)
     assert common.start(host) is None and len(host.saved) == 1   # once
     assert os.path.isfile(lock.lock_path(path))           # and it is held
@@ -113,13 +113,13 @@ def test_the_first_launch_on_a_task_saves_an_empty_v0001(shot, work):
 
 @_with_shot
 def test_a_launch_opens_the_artists_newest_file_as_it_is(shot, work):
-    _touch(work, "SEQ001_AD1030_rahul_anim_v0003.ma", 300)
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0001.ma", 100)
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0002.ma", 200)
+    _touch(work, "AD1030_rahul_Anim_v0003.ma", 300)
+    _touch(work, "AD1030_jitesh_Anim_v0001.ma", 100)
+    _touch(work, "AD1030_jitesh_Anim_v0002.ma", 200)
     host = _Host()
     common.start(host)
     assert host.saved == [] and host.shown == []          # no picker, no new version
-    assert host.opened == [work + "/" + "SEQ001_AD1030_jitesh_anim_v0002.ma"]
+    assert host.opened == [work + "/" + "AD1030_jitesh_Anim_v0002.ma"]
 
     common.load_file(host)                  # the menu entry, any artist's file
     assert [f["version"] for f in host.shown[0]] == [3, 2, 1]
@@ -129,10 +129,10 @@ def test_a_launch_opens_the_artists_newest_file_as_it_is(shot, work):
 
 @_with_shot
 def test_an_artist_new_to_a_task_gets_their_own_v0001(shot, work):
-    _touch(work, "SEQ001_AD1030_rahul_anim_v0003.ma", 300)
+    _touch(work, "AD1030_rahul_Anim_v0003.ma", 300)
     host = _Host()
     path = common.start(host)
-    assert path == work + "/" + "SEQ001_AD1030_jitesh_anim_v0001.ma"
+    assert path == work + "/" + "AD1030_jitesh_Anim_v0001.ma"
     assert host.saved == [path] and host.opened == [] and host.shown == []
     lock.release_all()
 
@@ -152,10 +152,10 @@ def _foreign_lock(path, user, host="ws-14", pid=4242):
 
 @_with_shot
 def test_a_file_someone_else_has_open_cannot_be_opened(shot, work):
-    _touch(work, "SEQ001_AD1030_rahul_anim_v0001.ma")
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0002.ma")
-    rahuls, mine = (work + "/SEQ001_AD1030_" + n for n in
-                    ("rahul_anim_v0001.ma", "jitesh_anim_v0002.ma"))
+    _touch(work, "AD1030_rahul_Anim_v0001.ma")
+    _touch(work, "AD1030_jitesh_Anim_v0002.ma")
+    rahuls, mine = (work + "/AD1030_" + n for n in
+                    ("rahul_Anim_v0001.ma", "jitesh_Anim_v0002.ma"))
     _foreign_lock(rahuls, "rahul")
 
     held = picker.rows(paths.task_files())[1][3]
@@ -171,15 +171,17 @@ def test_a_file_someone_else_has_open_cannot_be_opened(shot, work):
     with open(rahuls, "a"):
         pass
     os.remove(lock.lock_path(rahuls))                     # rahul closed it
+    host.answer = False                     # "no, keep it as rahul's file"
     assert common.open_path(host, rahuls) == rahuls
+    assert "rahul's file" in host.told[-1] and host.saved == []
     assert not os.path.exists(lock.lock_path(mine))       # moved with us
     lock.release_all()
 
 
 @_with_shot
 def test_my_own_lock_from_another_machine_can_be_taken_over(shot, work):
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0001.ma")
-    path = work + "/" + "SEQ001_AD1030_jitesh_anim_v0001.ma"
+    _touch(work, "AD1030_jitesh_Anim_v0001.ma")
+    path = work + "/" + "AD1030_jitesh_Anim_v0001.ma"
     _foreign_lock(path, "jitesh")
 
     host = _Host()
@@ -195,8 +197,8 @@ def test_my_own_lock_from_another_machine_can_be_taken_over(shot, work):
 def test_a_crashed_session_on_this_machine_does_not_block(shot, work):
     if os.name != "posix":
         return                     # no safe liveness check on Windows
-    _touch(work, "SEQ001_AD1030_rahul_anim_v0001.ma")
-    path = work + "/" + "SEQ001_AD1030_rahul_anim_v0001.ma"
+    _touch(work, "AD1030_rahul_Anim_v0001.ma")
+    path = work + "/" + "AD1030_rahul_Anim_v0001.ma"
     _foreign_lock(path, "rahul", host=lock.me()["host"], pid=2 ** 22 + 7)
     assert lock.holder(path) is None
     assert common.open_path(_Host(), path) == path
@@ -206,25 +208,60 @@ def test_a_crashed_session_on_this_machine_does_not_block(shot, work):
 @_with_shot
 def test_old_names_still_count_and_logins_may_hold_underscores(shot, work):
     _touch(work, LEGACY + "_jitesh_v0003.ma", 100)        # named before 1.6
-    _touch(work, "SEQ001_AD1030_j_smith_anim_v0005.ma", 200)
+    _touch(work, "SEQ001_AD1030_jitesh_anim_v0004.ma", 150)  # 1.6 name
+    _touch(work, "AD1030_j_smith_Anim_v0005.ma", 200)
     files = paths.task_files()
     assert [(f["version"], f["user"]) for f in files] == \
-        [(5, "j_smith"), (3, "jitesh")]
-    # jitesh's next file carries on from their old v0003, under the new name
+        [(5, "j_smith"), (4, "jitesh"), (3, "jitesh")]
+    # jitesh's next file carries on from their old v0004, under the new name
     assert versioning.next_scene_path() == \
-        work + "/SEQ001_AD1030_jitesh_anim_v0004.ma"
+        work + "/AD1030_jitesh_Anim_v0005.ma"
+
+
+@_with_shot
+def test_names_carry_the_first_name_and_a_short_department(shot, work):
+    mm = shot + "/maya/scenes/matchmove"
+    os.environ.update(FLOW_DEPARTMENT="matchmove", FLOW_USER="jitesh.g",
+                      FLOW_ARTIST="Jitesh")
+    try:
+        # files the login saved before 1.7 are still this artist's
+        _touch(mm, "SEQ001_AD1030_jitesh.g_matchmove_v0002.ma")
+        assert versioning.next_scene_path() == \
+            mm + "/AD1030_jitesh_MM_v0003.ma"
+        del os.environ["FLOW_ARTIST"]       # an older Flow: login before "."
+        assert paths.scene_name(1) == "AD1030_jitesh_MM_v0001.ma"
+    finally:
+        os.environ.pop("FLOW_DEPARTMENT")
+        os.environ.pop("FLOW_ARTIST", None)
+        os.environ["FLOW_USER"] = "jitesh"
+    assert paths.department_code("animation") == "Anim"
+    assert paths.department_code("comp") == "comp"
+
+
+@_with_shot
+def test_opening_another_artists_file_offers_a_copy_as_mine(shot, work):
+    _touch(work, "AD1030_rahul_Anim_v0003.ma")
+    _touch(work, "AD1030_jitesh_Anim_v0001.ma")
+    rahuls = work + "/AD1030_rahul_Anim_v0003.ma"
+    host = _Host()
+    path = common.open_path(host, rahuls)
+    assert path == work + "/AD1030_jitesh_Anim_v0002.ma"
+    assert host.saved == [path] and "rahul's file" in host.told[0]
+    assert common.offer_own_copy(host, rahuls) == rahuls      # asked once
+    assert len(host.saved) == 1
+    lock.release_all()
 
 
 @_with_shot
 def test_a_picked_department_has_its_own_folder_and_versions(shot, work):
     roto = shot + "/maya/scenes/roto"
-    _touch(roto, "SEQ001_AD1030_jitesh_roto_v0002.ma")
-    _touch(work, "SEQ001_AD1030_jitesh_anim_v0007.ma")
+    _touch(roto, "AD1030_jitesh_roto_v0002.ma")
+    _touch(work, "AD1030_jitesh_Anim_v0007.ma")
     assert [f["version"] for f in paths.department_files("Roto")] == [2]
     os.environ["FLOW_DEPARTMENT"] = "roto"
     try:
         assert versioning.next_scene_path() == \
-            roto + "/SEQ001_AD1030_jitesh_roto_v0003.ma"
+            roto + "/AD1030_jitesh_roto_v0003.ma"
     finally:
         del os.environ["FLOW_DEPARTMENT"]
     assert paths.work_dir() == work                       # back to the step

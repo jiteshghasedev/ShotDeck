@@ -19,7 +19,8 @@ class LaunchError(RuntimeError):
     """Raised when a launch cannot even be attempted."""
 
 
-def launch(project, software, login=None, email=None, task=None):
+def launch(project, software, login=None, email=None, task=None,
+           artist=None):
     """Start a DCC for this project, inside a rez environment when one is set.
 
     `task` is the ShotGrid Task the artist selected, or None. Either way a
@@ -30,7 +31,7 @@ def launch(project, software, login=None, email=None, task=None):
     log_path -- a file rather than a pipe, so a DCC is never blocked by a full
     pipe buffer after Flow exits.
     """
-    ctx = ctx_mod.build(project, software, task, login, email)
+    ctx = ctx_mod.build(project, software, task, login, email, artist)
     ctx_path = ctx_mod.write(ctx)
 
     extra = {
@@ -98,7 +99,7 @@ def launch(project, software, login=None, email=None, task=None):
 
 
 def launch_package(project, package, version=None, task=None,
-                   login=None, email=None, extra_packages=()):
+                   login=None, email=None, extra_packages=(), artist=None):
     """Launch a DCC discovered in the rez package tree, against a task.
 
     Runs `rez env <package>-<version> flow_context -- <command>` in one
@@ -121,7 +122,8 @@ def launch_package(project, package, version=None, task=None,
         "linux_path": exe,
         "linux_args": "",
     }
-    return launch(project, software, login=login, email=email, task=task)
+    return launch(project, software, login=login, email=email, task=task,
+                  artist=artist)
 
 
 # alias("pureref", "{root}/PureRef-2.1.2_x64.Appimage") in a package.py

@@ -9,7 +9,8 @@ import os
 import sys
 
 from . import MENU_NAME, actions, common
-from .. import context, lock, paths, picker, plates, publish
+from .. import (context, lock, paths, picker, plates, publish, review,
+                shotgrid)
 
 # Nuke shows the logger in its terminal; a bare sys.stdout.write may not.
 log = logging.getLogger("flow")
@@ -36,6 +37,10 @@ def install():
     menu.addSeparator()
     menu.addCommand("Load Plate + Write", setup_shot)
     menu.addCommand("Task Panel...", module.action_task_panel)
+    menu.addSeparator()
+    menu.addCommand("Open Sequence Review...", open_sequence_review)
+    menu.addCommand("Create Annotation Folders", create_annotation_folders)
+    menu.addCommand("Retry Pending Notes", retry_pending_notes)
     nuke.addOnScriptLoad(_on_load)
     nuke.addOnScriptSave(_on_save)
     _after_startup(setup_empty_script)
@@ -50,9 +55,15 @@ def _on_save():
 
 def _on_load():
     """Lock every script Nuke opens, File menu included. One someone else
-    has open is cleared again -- Nuke has no way to cancel the load."""
-    if not common.opening(sys.modules[__name__], current_scene()):
+    has open is cleared again -- Nuke has no way to cancel the load. One
+    another artist saved is offered as a copy of the current artist's own,
+    after the load: Nuke cannot save from inside it."""
+    module = sys.modules[__name__]
+    path = current_scene()
+    if not common.opening(module, path):
         _after_startup(_clear)                  # not from inside the load
+    elif path:
+        _after_startup(lambda: common.offer_own_copy(module, path))
 
 
 def _clear():
@@ -297,6 +308,182 @@ def ask_path(start_dir, extension, suggested=""):
                                  "*{0}".format(extension or ""),
                                  default=start_dir + "/" + suggested)
     return chosen or None
+
+
+# -- sequence review (flow_dcc/review.py) ---------------------------------
+
+REVIEW_COLUMNS = 4
+REVIEW_STEP = (700, 600)                # x, y between two shots' backdrops
+
+_BEFORE = "import flow_dcc.adapters.nuke as f; f.annotation_before_render()"
+_AFTER = "import flow_dcc.adapters.nuke as f; f.annotation_after_render()"
+
+
+def _ask_everything():
+    """Open (and with which shots), or None on Cancel."""
+    try:
+        from PySide6 import QtWidgets
+    except ImportError:
+        from PySide2 import QtWidgets
+    box = QtWidgets.QMessageBox(QtWidgets.QApplication.activeWindow())
+    box.setWindowTitle("Flow: Sequence Review")
+    box.setText("Load the plate and movie of every shot you review in this "
+                "sequence, each with an annotation Write.")
+    check = QtWidgets.QCheckBox(
+        "Load every shot in the sequence, not only the shots I review")
+    check.setChecked(False)
+    box.setCheckBox(check)
+    box.setStandardButtons(QtWidgets.QMessageBox.Open |
+                           QtWidgets.QMessageBox.Cancel)
+    run = getattr(box, "exec", None) or box.exec_
+    if run() != QtWidgets.QMessageBox.Open:
+        return None
+    return check.isChecked()
+
+
+def open_sequence_review(everything=None):
+    """Build the lead's review script for the launch shot's sequence."""
+    nuke = _nuke()
+    module = sys.modules[__name__]
+    ctx = context.get()
+    if ctx.entity_type != "Shot" or not review.sequence_root(ctx):
+        return message("Launch Nuke from Flow on a shot task to review its "
+                       "sequence.")
+    if everything is None:
+        everything = _ask_everything()
+        if everything is None:
+            return None
+    try:
+        rows = review.shots(shotgrid.connect(), ctx, everything)
+    except Exception as e:
+        return message("Could not read the sequence from ShotGrid:\n{0}"
+                       .format(e))
+    if not rows:
+        return message("You are not a reviewer on any shot in this sequence. "
+                       "Tick 'Load every shot' to see them all.")
+    path = review.script_path(ctx)
+    if not confirm("{0} shot(s) to load.\n\nThe review script will be saved "
+                   "to:\n{1}\n\nContinue?".format(len(rows), path)):
+        return None
+    if current_scene() or _has_nodes():
+        if nuke.root().modified() and not common.discard_ok(
+                module, "the sequence review"):
+            return None
+        nuke.scriptClear()
+        lock.release_all()
+    for i, shot in enumerate(rows):
+        _review_shot(shot, (i % REVIEW_COLUMNS) * REVIEW_STEP[0],
+                     (i // REVIEW_COLUMNS) * REVIEW_STEP[1])
+    folder = os.path.dirname(path)
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    nuke.scriptSaveAs(path, overwrite=0)
+    publish.hold(path)
+    log.info("sequence review %s: %d shots", path, len(rows))
+    return path
+
+
+def _review_shot(shot, x, y):
+    """One shot's backdrop: plate -> RotoPaint -> annotation Write, + movie."""
+    nuke = _nuke()
+    folder = shot["root"] + "/" + plates.PLATES
+    plate = plates.find_plate(folder)
+    read = nuke.nodes.Read(file=plate["path"]) if plate else None
+    if read is not None and plate["first"] is not None:
+        for knob in ("first", "origfirst"):
+            read[knob].setValue(plate["first"])
+        for knob in ("last", "origlast"):
+            read[knob].setValue(plate["last"])
+    paint = nuke.nodes.RotoPaint(inputs=[read] if read else [])
+    write = nuke.nodes.Write(inputs=[paint])
+    write.setName("Annotate_" + shot["code"])
+    write["file_type"].setValue("jpeg")
+    # Rendered where beforeRender says, at the moment the lead renders.
+    write["file"].setValue(review.annotation_path(shot["code"],
+                                                  shot["department"]))
+    for name, value in (("flow_shot_id", shot["id"]),
+                        ("flow_shot", shot["code"]),
+                        ("flow_department", shot["department"])):
+        knob = nuke.String_Knob(name, name)
+        knob.setValue(str(value))
+        knob.setVisible(False)
+        write.addKnob(knob)
+    write.addKnob(nuke.Multiline_Eval_String_Knob(
+        "flow_note", "Note to artist"))
+    write["beforeRender"].setValue(_BEFORE)
+    write["afterRender"].setValue(_AFTER)
+    nodes = [n for n in (read, paint, write) if n is not None]
+    for i, node in enumerate(nodes):
+        node.setXYpos(x + 40, y + 60 + i * 120)
+    movie = plates.find_movie(folder)
+    if movie and (not plate or movie["path"] != plate["path"]):
+        nuke.nodes.Read(file=movie["path"]).setXYpos(x + 240, y + 60)
+    nuke.nodes.BackdropNode(
+        xpos=x, ypos=y, bdwidth=REVIEW_STEP[0] - 100,
+        bdheight=REVIEW_STEP[1] - 120, note_font_size=42,
+        label="{0}  ({1})".format(shot["code"],
+                                  paths.department_code(shot["department"])))
+    if not plate:
+        log.warning("%s: no plate under %s", shot["code"], folder)
+    return write
+
+
+def annotation_before_render():
+    """Fix this render's path: the time now, so a later round never
+    overwrites this one, and make its folder."""
+    node = _nuke().thisNode()
+    path = review.annotation_path(node["flow_shot"].value(),
+                                  node["flow_department"].value())
+    node["file"].setValue(path)
+    folder = os.path.dirname(path)
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+
+
+def annotation_after_render():
+    """Post the rendered frames as a Note on the shot, or queue it."""
+    node = _nuke().thisNode()
+    folder = os.path.dirname(node["file"].value())
+    images = sorted(os.path.join(folder, f).replace("\\", "/")
+                    for f in os.listdir(folder) if f.lower().endswith(".jpg"))
+    if not images:
+        return
+    entry = review.note_entry(
+        {"id": int(node["flow_shot_id"].value()),
+         "code": node["flow_shot"].value()},
+        node["flow_department"].value(), images, node["flow_note"].value())
+    posted, reason = review.send_or_queue(shotgrid.connect, entry)
+    if posted:
+        message("Annotations posted to {0} in ShotGrid:\n{1}".format(
+            node["flow_shot"].value(), folder))
+    else:
+        message("The frames are rendered in\n{0}\n\nShotGrid could not be "
+                "reached ({1}), so the Note is queued. Post it later with "
+                "{2} > Retry Pending Notes.".format(folder, reason, MENU_NAME))
+
+
+def retry_pending_notes():
+    sent, left, error = review.retry(shotgrid.connect)
+    if not sent and not left:
+        return message("No annotation Notes are waiting.")
+    text = "{0} Note(s) posted to ShotGrid.".format(sent)
+    if left:
+        text += "\n{0} still waiting: {1}".format(left, error)
+    return message(text)
+
+
+def create_annotation_folders():
+    """elements/images/annotation/<dept> for every department, this shot."""
+    ctx = context.get()
+    if not ctx.entity_root:
+        return message("Launch Nuke from Flow on a shot task first.")
+    base = ctx.entity_root.rstrip("/") + "/" + review.ANNOTATIONS
+    for department in set(paths.department_code(d)
+                          for d in paths.DEPARTMENTS):
+        folder = base + "/" + department
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+    return message("Annotation folders are ready in\n{0}".format(base))
 
 
 # -- Deadline -------------------------------------------------------------

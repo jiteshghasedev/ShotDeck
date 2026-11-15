@@ -38,6 +38,14 @@ _FRAMES = re.compile(r"[.\-_]?(%0?\d*d|\d*-?\d*[#@]+).*$")
 
 _mode = None        # the live MinorMode; kept so it is never collected
 
+# Note text, in the dialog and drawn on the frame: yellow, 30% bigger than
+# RV's own, which is black on a dark UI and hard to read.
+TEXT_COLOR = "#ffd400"
+TEXT_RGBA = [1.0, 0.83, 0.0, 1.0]
+TEXT_SCALE = 1.3
+# RV's annotate text tool starts at 48 px on a 1080 image.
+TEXT_SIZE = 48.0 / 1080.0 * TEXT_SCALE
+
 
 def payload(environ=None):
     """The review context rv_player exported, or {} outside a Flow launch."""
@@ -181,6 +189,47 @@ def install():
 
     _mode = FlowReview()
     _mode.toggle()
+    _annotate_text_defaults()
+
+
+def _annotate_text_defaults():
+    """Yellow, larger text for RV's annotate tool, written once per user.
+
+    The tool loads on first use (load: delay), after this runs, and reads
+    its Annotate/text_* settings then. Written once, so a colour the
+    reviewer picks later in the tool sticks.
+
+    shortcut: setting keys read from OpenRV main's annotate_mode.mu;
+    unverified on RV 3.1.0, and a failure only leaves RV's own default.
+    """
+    from rv import commands
+    try:
+        if commands.readSettings("Flow", "annotateText", 0) >= 1:
+            return
+        commands.writeSettings("Annotate", "text_color", TEXT_RGBA)
+        commands.writeSettings("Annotate", "text_size", TEXT_SIZE)
+        commands.writeSettings("Flow", "annotateText", 1)
+    except Exception as e:
+        print("Flow: could not set the annotate text defaults: %s" % e)
+
+
+def _ask_note(parent, prompt):
+    """(text, ok) from a multi-line box whose text is easy to read."""
+    try:
+        from PySide6 import QtWidgets
+    except ImportError:
+        from PySide2 import QtWidgets
+    dialog = QtWidgets.QInputDialog(parent)
+    dialog.setWindowTitle("Send Annotations to ShotGrid")
+    dialog.setLabelText(prompt)
+    dialog.setOption(QtWidgets.QInputDialog.UsePlainTextEditForTextInput)
+    points = dialog.font().pointSizeF()
+    dialog.setStyleSheet(
+        "QPlainTextEdit { color: %s; background: #1e1e1e; font-size: %.1fpt; }"
+        % (TEXT_COLOR, (points if points > 0 else 10.0) * TEXT_SCALE))
+    run = getattr(dialog, "exec", None) or dialog.exec_
+    ok = bool(run())
+    return dialog.textValue(), ok
 
 
 def _annotated_frames():
@@ -252,8 +301,7 @@ def send_from_rv(event=None):
     else:
         prompt = ("Nothing is drawn, so the frame on screen goes up:\n%s\n\n"
                   "Note:" % summary)
-    text, ok = QtWidgets.QInputDialog.getMultiLineText(
-        parent, "Send Annotations to ShotGrid", prompt)
+    text, ok = _ask_note(parent, prompt)
     text = (text or "").strip()
     if not ok or not (text or drawn):
         return

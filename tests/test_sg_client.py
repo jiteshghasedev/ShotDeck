@@ -255,3 +255,15 @@ def test_every_thread_gets_its_own_shotgrid_connection():
     finally:
         sg_client.shotgun_api3.Shotgun = real
         config.SG_SCRIPT_KEY = old_key
+
+
+def test_files_are_named_after_the_lowercase_first_name():
+    sg = fakes.FakeShotgun()
+    act = {"type": "HumanUser", "sg_status_list": "act"}
+    nanda = dict(act, id=50, name="Nanda Kumar")
+    sg.users = [nanda, dict(act, id=51, name="Jitesh Ghase")]
+    client = fakes.client(sg)
+    assert client.artist_name(nanda, "nanda.k") == "nanda"
+    assert client.artist_name(None, "jitesh.g") == "jitesh"   # no SG name
+    sg.users.append(dict(act, id=52, name="Nanda Rao"))      # a namesake
+    assert client.artist_name(nanda, "nanda.k") == "nandak"

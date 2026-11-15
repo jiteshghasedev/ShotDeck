@@ -92,14 +92,25 @@ DEFAULT_PUBLISH_LAYOUT = "{software}/{step}/publish"
 
 VERSION_RE = re.compile(r"_v(\d+)", re.IGNORECASE)
 
-# SEQ001_AD1030_jitesh_lighting_v0001.ma
+# AD1030_jitesh_MM_v0001.ma
 VERSION_PADDING = 4
 
 # What Nuke's launch dialog offers to work in. A task's own step is added to
 # these when it is not one of them.
 DEPARTMENTS = [d.strip().lower() for d in os.environ.get(
-    "FLOW_DEPARTMENTS", "roto,prep,comp,lighting,asset").split(",")
-    if d.strip()]
+    "FLOW_DEPARTMENTS",
+    "comp,prep,roto,lighting,asset,layout,fx,cloth,groom,rig,matchmove,"
+    "animation").split(",") if d.strip()]
+
+# How a department is written in a file name. Folders keep the full,
+# lowercase name ingest creates (nuke/matchmove/scene); only names shorten.
+DEPARTMENT_CODES = {"matchmove": "MM", "mm": "MM",
+                    "animation": "Anim", "anim": "Anim"}
+
+
+def department_code(department):
+    """`matchmove` -> `MM`, `animation` -> `Anim`; anything else as it is."""
+    return DEPARTMENT_CODES.get((department or "").lower(), department or "")
 
 
 def _layout(software):
@@ -173,32 +184,38 @@ def extension(ctx=None):
 
 
 def scene_stem(ctx=None):
-    """`SEQ001_AD1030_jitesh_lighting` -- everything but the version.
+    """`AD1030_jitesh_MM` -- everything but the version.
 
-    Sequence, shot (or asset), artist login, department. Every component
+    Shot (or asset), artist, department code. No sequence: shot codes from
+    the client already carry one (AD1050, MV_001_020). The artist is the
+    lowercase first name Flow exported (context.artist). Every component
     comes from the launch context; nothing here is entered by an artist or
-    inferred from the open scene. The department is lowercased because that
-    is how it appears in the paths, while the sequence and shot keep
-    ShotGrid's own casing.
+    inferred from the open scene.
 
     A component the launch did not carry is dropped rather than filled with a
     placeholder -- a name with a gap is still traceable, a name with "None" in
     it is not.
     """
     ctx = ctx or context.get()
-    bits = _task_bits(ctx) + [ctx.user or "", ctx.department]
+    bits = [ctx.entity_name or "", ctx.artist or "",
+            department_code(ctx.department)]
     return "_".join(b for b in bits if b) or "untitled"
 
 
 def task_prefix(ctx=None):
-    """`SEQ001_AD1030` -- the part of the name every artist's files on this
-    shot share."""
+    """`AD1030` -- the part of the name every artist's files on this shot
+    share."""
     ctx = ctx or context.get()
-    return "_".join(b for b in _task_bits(ctx) if b) or "untitled"
+    return ctx.entity_name or "untitled"
 
 
 def _task_bits(ctx):
     return [ctx.sequence or "", ctx.entity_name or ""]
+
+
+def _v16_prefix(ctx):
+    """flow_dcc 1.6: `SEQ001_AD1030`, then login and full department."""
+    return "_".join(b for b in _task_bits(ctx) if b) or "untitled"
 
 
 def _legacy_prefix(ctx):
@@ -209,7 +226,7 @@ def _legacy_prefix(ctx):
 
 
 def scene_name(version, ctx=None, ext=None):
-    """`uat6_SEQ001_AD1030_lighting_jitesh_v0001.ma`."""
+    """`AD1030_jitesh_MM_v0001.ma`."""
     ctx = ctx or context.get()
     if ext is None:
         ext = extension(ctx)
@@ -235,10 +252,13 @@ def existing_versions(ctx=None, ext=None):
 
 
 def artist_files(ctx=None, ext=None):
-    """This artist's own work files for this task, newest version first."""
+    """This artist's own work files for this task, newest version first.
+
+    Older files carry the login, newer ones the first name; both are mine.
+    """
     ctx = ctx or context.get()
-    me = (ctx.user or "").lower()
-    return [f for f in task_files(ctx, ext) if (f["user"] or "").lower() == me]
+    me = set(n.lower() for n in context.my_names(ctx))
+    return [f for f in task_files(ctx, ext) if (f["user"] or "").lower() in me]
 
 
 def department_files(department, ctx=None, ext=None):
@@ -256,7 +276,8 @@ def task_files(ctx=None, ext=None):
     counted. The user is the artist the file is named after, which is who
     saved it through Flow; a file without one falls back to its owner on
     disk. Files named the pre-1.6 way are listed too, and still count towards
-    the artist's next version.
+    the artist's next version, as do the 1.6 ones
+    (`SEQ001_AD1030_jitesh_matchmove_v0004`).
     """
     folder = work_dir(ctx)
     if not folder or not os.path.isdir(folder):
@@ -267,17 +288,25 @@ def task_files(ctx=None, ext=None):
         ext = extension(ctx)
     tail = r"_v(?P<version>\d+){0}$".format(
         re.escape(ext) if ext else r"(?:\.[^.]+)?")
-    dept = "_" + re.escape(ctx.department) if ctx.department else ""
+
+    def dept(name):
+        return "_" + re.escape(name) if name else ""
+
     patterns = [
         re.compile(r"^{0}_(?P<user>.+?){1}{2}".format(
-            re.escape(task_prefix(ctx)), dept, tail), re.IGNORECASE),
+            re.escape(task_prefix(ctx)),
+            dept(department_code(ctx.department)), tail), re.IGNORECASE),
+        re.compile(r"^{0}_(?P<user>.+?){1}{2}".format(
+            re.escape(_v16_prefix(ctx)), dept(ctx.department), tail),
+            re.IGNORECASE),
         re.compile(r"^{0}(?:_(?P<user>.+?))?{1}".format(
             re.escape(_legacy_prefix(ctx)), tail), re.IGNORECASE),
     ]
 
     found = []
     for name in os.listdir(folder):
-        match = patterns[0].match(name) or patterns[1].match(name)
+        match = next((m for m in (p.match(name) for p in patterns) if m),
+                     None)
         if not match:
             continue
         path = folder + "/" + name

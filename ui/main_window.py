@@ -58,6 +58,9 @@ class MainWindow(QMainWindow):
             else production
         self.sg.login = self.login      # signs the notes this session writes
         self.owner = None         # ShotGrid HumanUser, filled by _bootstrap
+        # Lowercase first name that work files are named after; the login
+        # until _bootstrap has the ShotGrid name.
+        self.artist = self.sg.artist_name(None, self.login)
         self._projects = []       # full Project dicts, for the header search
         self._pending_task_id = None    # task to select once its project loads
         self.project = None
@@ -397,12 +400,13 @@ class MainWindow(QMainWindow):
 
     def _bootstrap(self):
         owner = self.sg.resolve_owner(self.email)
+        artist = self.sg.artist_name(owner, self.login)
         projects = self.sg.active_projects()
         statuses = self.sg.task_statuses()
-        return owner, projects, statuses
+        return owner, artist, projects, statuses
 
     def _on_bootstrap(self, result):
-        owner, projects, statuses = result
+        owner, self.artist, projects, statuses = result
         self.owner = owner
         self._projects = projects
         # Signs and credits the notes a lead sends from RV.
@@ -657,7 +661,7 @@ class MainWindow(QMainWindow):
         try:
             pid, log_path = launcher.launch_package(
                 self._task_project(task), package, version, task,
-                self.login, self.email)
+                self.login, self.email, artist=self.artist)
         except Exception as e:
             self._launch_failed(f"{package}-{version}", e)
             return
@@ -670,7 +674,8 @@ class MainWindow(QMainWindow):
     def launch_software(self, software):
         try:
             pid, log_path = launcher.launch(
-                self.project, software, self.login, self.email, self.task)
+                self.project, software, self.login, self.email, self.task,
+                artist=self.artist)
         except Exception as e:
             self._launch_failed(software.get("code", "app"), e)
             return

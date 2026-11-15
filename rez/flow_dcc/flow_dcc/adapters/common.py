@@ -209,9 +209,37 @@ def open_path(adapter, path):
         opened = None
     if opened:
         lock.keep_only(path)
-    else:
-        lock.release(path)        # cancelled: the old scene is still open
+        return offer_own_copy(adapter, opened)
+    lock.release(path)            # cancelled: the old scene is still open
     return opened
+
+
+def offer_own_copy(adapter, path):
+    """Another artist's file was opened: offer to save it as this artist's
+    next version, so the file and the renders from it carry who is working
+    on it now. Returns the scene that is open afterwards.
+
+    Asked once per file a session opens -- a host that reports the same
+    open twice (Flow's open, then the host's own load callback) asks once.
+    """
+    name = os.path.basename(path or "")
+    if not name or getattr(adapter, "_flow_offered", None) == path:
+        return path
+    adapter._flow_offered = path
+    owner = next((f["user"] for f in paths.task_files()
+                  if f["name"] == name), None)
+    if not owner or owner.lower() in \
+            set(n.lower() for n in context.my_names(context.get())):
+        return path
+    try:
+        target = os.path.basename(versioning.next_scene_path())
+    except ValueError:
+        return path
+    if not adapter.confirm(
+            "{0} is {1}'s file.\n\nSave a copy as yours ({2}), so the file "
+            "and its renders carry your name?".format(name, owner, target)):
+        return path
+    return version_up(adapter) or path
 
 
 def claim(adapter, path):

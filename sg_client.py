@@ -182,6 +182,31 @@ class SGClient:
         # still worth trying, since that is what the tasks most likely store.
         return user_email
 
+    def artist_name(self, owner, login):
+        """The lowercase first name work files are named after.
+
+        'Jitesh Ghase' -> 'jitesh'. When another active user shares that
+        first name, the surname initial is added ('jiteshg') so two artists'
+        versions never mix. No ShotGrid name falls back to the login before
+        any dot ('jitesh.g' -> 'jitesh').
+        """
+        words = ((owner or {}).get("name") or "").split()
+        if not words:
+            return re.sub(r"[^a-z0-9]", "", (login or "").split(".")[0].lower())
+        name = words[0].lower()
+        if len(words) > 1:
+            try:
+                namesakes = self.sg.find(
+                    config.TASK_OWNER_ENTITY,
+                    [["name", "starts_with", words[0] + " "],
+                     ["sg_status_list", "is", "act"]], ["name"])
+            except Exception as e:
+                log.warning("could not check for namesakes: %s", e)
+                namesakes = []
+            if any(u["id"] != owner.get("id") for u in namesakes):
+                name += words[-1][0].lower()
+        return re.sub(r"[^a-z0-9]", "", name)
+
     def _owner_relation(self):
         """Filter relation for Task.sg_assigned_to, by its type on this site.
 

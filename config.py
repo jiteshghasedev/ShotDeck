@@ -7,7 +7,7 @@ import sys
 SG_SITE = os.environ.get("SG_SITE", "https://5and8.shotgrid.autodesk.com")
 SG_SCRIPT_NAME = os.environ.get("SG_SCRIPT_NAME", "SG_daemon")
 # No default: a script key must never live in the source of a public repository.
-SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY", "ja?loxpbfv6fpxhCflhehsula")
+SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY", "")
 
 # Custom assignment field on Task. Studio uses this instead of task_assignees.
 TASK_OWNER_FIELD = "sg_assigned_to"
@@ -610,4 +610,4 @@ DELIVERY_DONE_STATUS = os.environ.get("FLOW_DELIVERY_DONE_STATUS", "dlvd")
 APP_TITLE = "Flow"
 # Release number: bump it and add a CHANGELOG.md entry with every release.
 # FlowDash shows it too, so a web server running an old clone is easy to spot.
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"

@@ -195,7 +195,7 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert movie.Class() == "Read" and movie["file"].value().endswith(
             "/elements/plates/bg/bg.mov")
         work = env["FLOW_ENTITY_ROOT"] + "/nuke/comp/scene/"
-        script = work + "SEQ001_AD1030_jitesh_comp_v0001.nk"
+        script = work + "AD1030_jitesh_comp_v0001.nk"
         assert fake.saved == [script, script]   # named, then with the nodes
         assert kept == [script]                 # watched while Nuke starts
         assert (read["first"].value(), read["last"].value()) == (1001, 1050)
@@ -204,11 +204,11 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert root["format"].value() == "Flow_640x480"     # named, no warning
         assert fake.added_formats == ["640 480 1.0 Flow_640x480"]
         assert write.inputs == [read]
-        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/SEQ001_AD1030_jitesh_comp_v0001/"             "SEQ001_AD1030_jitesh_comp_v0001.%04d.exr"
+        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/AD1030_jitesh_comp_v0001/"             "AD1030_jitesh_comp_v0001.%04d.exr"
 
         fake.allNodes = lambda *a: [write]          # Version Up re-points it
-        adapter.save_scene(work + "SEQ001_AD1030_jitesh_comp_v0002.nk")
-        assert "/SEQ001_AD1030_jitesh_comp_v0002/" in write["file"].value()
+        adapter.save_scene(work + "AD1030_jitesh_comp_v0002.nk")
+        assert "/AD1030_jitesh_comp_v0002/" in write["file"].value()
         fake.saved.pop()
 
         existing = list(made)
@@ -233,17 +233,18 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert made == [] and len(fake.saved) == 2
         assert opened == [script]         # opened as is, no new version
         departments, current, files = asked[0]
-        assert departments == ["roto", "prep", "comp", "lighting", "asset"]
+        assert departments[:3] == ["comp", "prep", "roto"]
+        assert "matchmove" in departments
         assert current == "comp" and [f["path"] for f in files] == [script]
 
         lock.release_all()
         picker.ask_start = lambda *a: ("new", "roto", None)
         adapter.action_load_file()        # New, in another department
         roto = env["FLOW_ENTITY_ROOT"] + \
-            "/nuke/roto/scene/SEQ001_AD1030_jitesh_roto_v0001.nk"
+            "/nuke/roto/scene/AD1030_jitesh_roto_v0001.nk"
         assert fake.saved[2:] == [roto, roto]   # with a plate and a Write
         assert [n.Class() for n in made] == ["Read", "Read", "Write"]
-        assert "/SEQ001_AD1030_jitesh_roto_v0001/" in made[2]["file"].value()
+        assert "/AD1030_jitesh_roto_v0001/" in made[2]["file"].value()
     finally:
         picker.ask_start = real_ask
         os.environ.pop("FLOW_DEPARTMENT", None)
