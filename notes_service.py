@@ -195,19 +195,27 @@ class NotesService:
 
         Notes made on the task's versions carry the task too. Notes on the
         shot -- written on the shot itself, or for another of its tasks --
-        come back with scope "shot" and `where` saying which. Four queries.
+        come back with scope "shot" and `where` saying which. A note on one of
+        the task's Versions with no task on it (ShotGrid's own media player
+        writes those) is the task's, as in flow_dcc's Task panel. Five queries.
         """
         notes = list(self._task_and_shot_notes([task]).values())
         if not notes:
             return []
         replies = self.sg.replies_for_notes([n["id"] for n in notes]) or []
         authors = self._authors(notes + replies)
+        versions = {v["id"] for v in self.sg.versions_for_task(task["id"])
+                    or []}
 
         entity_name = (task.get("entity") or {}).get("name") or ""
         placed = {}                     # note id -> (scope, where)
         for note in notes:
             linked = note.get("tasks") or []
-            if any(link.get("id") == task["id"] for link in linked):
+            on_version = any(
+                link.get("type") == "Version" and link.get("id") in versions
+                for link in note.get("note_links") or [])
+            if any(link.get("id") == task["id"] for link in linked) or \
+                    (on_version and not linked):
                 placed[note["id"]] = ("task", "")
             else:
                 others = [link.get("name") for link in linked

@@ -14,6 +14,7 @@ log = applog.get()
 # Whose tasks a list holds: the artist's own, the ones they lead or review
 # (config.TASK_LEAD_FIELD), or every artist's.
 MINE, REVIEW, EVERYONE = "mine", "review", "everyone"
+MINE_REVIEW = "mine_review"         # MINE and REVIEW together
 
 
 def _newer(candidate, current, field):
@@ -1071,6 +1072,11 @@ class SGClient:
 
     def _my_tasks(self, project=None, statuses=None, exclude_statuses=None,
                   scope=MINE):
+        if scope == MINE_REVIEW:
+            both = {t["id"]: t for s in (MINE, REVIEW) for t in
+                    self._my_tasks(project, statuses, exclude_statuses, s)}
+            return sorted(both.values(),
+                          key=lambda t: t.get("due_date") or "9999")
         # The reviewers too, so the artist sees who signs the task off.
         fields = config.TASK_FIELDS + [config.TASK_LEAD_FIELD]
         if scope == EVERYONE:

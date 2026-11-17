@@ -2140,3 +2140,52 @@ def test_task_notes_show_the_shots_notes_too_tagged_and_filterable():
         [fakes.TASK, dict(fakes.TASK, id=7700, entity=None)])
     assert summary[fakes.TASK["id"]][0] == 3, summary
     assert 7700 not in summary
+
+
+# -- notes chat, Mine + Review, home filter ----------------------------------
+
+def test_a_note_on_the_tasks_version_without_a_task_is_this_tasks():
+    import notes_service
+
+    sg = fakes.FakeShotgun()
+    version = sg.add_version("SH010_comp_v001")
+    # ShotGrid's own player: the Version and the shot, no task.
+    player = sg.add_note(version["id"], "Fix the edge")
+    player["note_links"].append(fakes.SHOT)
+    shot = sg.add_note(version["id"], "Shot-wide grade note")
+    shot["note_links"] = [fakes.SHOT]
+    chat = notes_service.NotesService(fakes.client(sg)).task_chat(fakes.TASK)
+    assert {m.content: m.scope for m in chat} == {
+        "Fix the edge": "task", "Shot-wide grade note": "shot"}
+
+
+def test_mine_and_review_together_lists_both_once():
+    from sg_client import MINE_REVIEW
+
+    sg = fakes.FakeShotgun()
+    fakes.add_task(sg, "Comp")
+    review = fakes.add_task(sg, "Roto", owner="priya@5and8.ai")
+    review[config.TASK_LEAD_FIELD] = [fakes.ARTIST]
+    both = fakes.add_task(sg, "Paint")
+    both[config.TASK_LEAD_FIELD] = [fakes.ARTIST]
+    fakes.add_task(sg, "Lighting", owner="priya@5and8.ai")
+    tasks = fakes.client(sg).open_tasks(scope=MINE_REVIEW)
+    assert sorted(t["content"] for t in tasks) == ["Comp", "Paint", "Roto"]
+
+
+def test_home_filter_box_narrows_by_task_shot_and_project():
+    home = _home_with([
+        dict(fakes.TASK, id=1, content="Comp",
+             entity=dict(fakes.SHOT, name="SH010")),
+        dict(fakes.TASK, id=2, content="Roto",
+             entity=dict(fakes.SHOT, name="SH020")),
+        dict(fakes.TASK, id=3, content="Comp",
+             entity=dict(fakes.SHOT, name="SH020"))])
+    home.search.setText("roto sh020")         # word order does not matter
+    assert [t["id"] for t in home._rows] == [2]
+    home.search.setText("uat6")                    # the project's name
+    assert len(home._rows) == 3
+    home.search.setText("nothing")
+    assert home.stack.currentWidget() is home.filtered_empty
+    home.clear_filters()
+    assert len(home._rows) == 3

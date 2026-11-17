@@ -12,10 +12,11 @@ This answers it without picking a project first:
 - the Notes column counts the task's ShotGrid notes and dates the newest
   (sortable); clicking it opens the task's notes as a chat.
 
-The Mine / To Review / Everyone switch shows instead the tasks that list you
-in config.TASK_LEAD_FIELD (Task.task_reviewers), or every artist's on every
-active show -- both
-with an Artist column and filter. Production starts on Everyone.
+The Mine / To Review / Mine + Review / Everyone switch shows instead the
+tasks that list you in config.TASK_LEAD_FIELD (Task.task_reviewers), both
+those and your own, or every artist's on every active show -- each with an
+Artist column and filter. Production starts on Everyone. The filter box
+narrows the rows by task, shot or asset and project name.
 
 "Open" means any status not in config.TASK_DONE_STATUSES. That filter runs on
 the server, so finished work never crosses the wire. The filters on this page
@@ -29,15 +30,16 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QHBoxLayout,
-    QLabel, QMenu, QPushButton, QStackedWidget, QTableWidget,
+    QLabel, QLineEdit, QMenu, QPushButton, QStackedWidget, QTableWidget,
     QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
 import config
-from sg_client import EVERYONE, MINE, REVIEW
+from sg_client import EVERYONE, MINE, MINE_REVIEW, REVIEW
 from . import theme, ui_state
 from .branding import LoadingPage
 from .software_page import TaskMenu
+from .task_search import matches
 from .widgets import (
     DueDate, EmptyState, StatusPill, flash_refreshed, load_thumbnail, names,
     resizable,
@@ -121,7 +123,7 @@ class HomeTasks(TaskMenu, QWidget):
     task_opened = Signal(object)          # the Task dict
     notes_requested = Signal(object)      # the Task dict, from the Notes cell
     refresh_requested = Signal()
-    scope_changed = Signal(str)           # MINE, REVIEW or EVERYONE
+    scope_changed = Signal(str)           # MINE, REVIEW, MINE_REVIEW, ...
     # The task menu's actions, as on the project page's TasksTable.
     package_launched = Signal(object, str, str)
     folder_requested = Signal(str)
@@ -161,6 +163,7 @@ class HomeTasks(TaskMenu, QWidget):
         scope = QButtonGroup(self)
         self.scope_buttons = {}
         for key, text in ((MINE, "Mine"), (REVIEW, "To Review"),
+                          (MINE_REVIEW, "Mine + Review"),
                           (EVERYONE, "Everyone")):
             btn = QPushButton(text)
             btn.setObjectName("chip")
@@ -171,6 +174,11 @@ class HomeTasks(TaskMenu, QWidget):
             top.addWidget(btn)
             self.scope_buttons[key] = btn
         top.addStretch()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Filter task, shot, project")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(220)
+        top.addWidget(self.search)
         # Everyone only: one artist's tasks, for a manager checking a load.
         self.artist_box = QComboBox()
         self.artist_box.setMinimumWidth(150)
@@ -258,15 +266,17 @@ class HomeTasks(TaskMenu, QWidget):
         # Connected last, so filling the box never rebuilds a missing table.
         self.project_box.currentIndexChanged.connect(self._rebuild)
         self.artist_box.currentIndexChanged.connect(self._rebuild)
+        self.search.textChanged.connect(self._rebuild)
         self.set_scope(self.scope, reload=False)
 
     # -- scope ----------------------------------------------------------------
 
     HEADINGS = {MINE: "My Open Tasks", REVIEW: "Tasks To Review",
+                MINE_REVIEW: "My Tasks and Reviews",
                 EVERYONE: "All Open Tasks"}
 
     def set_scope(self, scope, reload=True):
-        """Mine, To Review or Everyone. The window reloads on scope_changed."""
+        """Mine, To Review, both or Everyone. The window reloads on scope_changed."""
         changed = scope != self.scope
         self.scope = scope
         self.heading.setText(self.HEADINGS[scope])
@@ -340,7 +350,8 @@ class HomeTasks(TaskMenu, QWidget):
 
     def clear_filters(self):
         self._chip = ALL
-        self.artist_box.setCurrentIndex(0)      # each rebuilds via the signal
+        self.search.clear()                     # each rebuilds via the signal
+        self.artist_box.setCurrentIndex(0)
         self.project_box.setCurrentIndex(0)
         self._rebuild()
 
@@ -487,6 +498,9 @@ class HomeTasks(TaskMenu, QWidget):
         if artist:
             in_project = [t for t in in_project
                           if artist in self._artists(t)]
+        text = self.search.text().strip()
+        if text:
+            in_project = matches(in_project, text, limit=None)
         self._refresh_chips(in_project)
         self._rows = self._sorted(filter_tasks(in_project, chip=self._chip))
 
@@ -537,6 +551,7 @@ class HomeTasks(TaskMenu, QWidget):
             what = self._chip_label(self._chip) if self._chip != ALL else ""
             self.filtered_title.setText(
                 "No tasks match" + (f" {what}" if what else "")
+                + (f" “{text}”" if text else "")
                 + (f" for {artist}" if artist else "")
                 + (f" in {where}" if where else ""))
             self.stack.setCurrentWidget(self.filtered_empty)
