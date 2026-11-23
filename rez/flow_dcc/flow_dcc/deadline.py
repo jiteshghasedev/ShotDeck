@@ -135,7 +135,7 @@ def validate(adapter, ctx=None):
             "The open scene has not been saved, so the farm has no file to "
             "render. Use Version Up first.")
 
-    work_dir = paths.work_dir(ctx)
+    work_dir = paths.work_root(ctx)       # any artist's roto folder too
     if work_dir and not os.path.normpath(scene).startswith(
             os.path.normpath(work_dir) + os.sep):
         raise DeadlineError(
@@ -238,6 +238,10 @@ def submit(adapter, ctx=None, description=""):
     ctx = ctx or context.get()
     plugin_name, scene = validate(adapter, ctx)
     frame_string = frames(adapter)
+    # The farm's Nuke has no Flow menu to copy the script beside its render.
+    snapshot = getattr(adapter, "snapshot_workfiles", None)
+    if snapshot:
+        snapshot(scene)
 
     folder = tempfile.mkdtemp(prefix="flow-deadline-")
     job_file = _write(os.path.join(folder, "job_info.job"),

@@ -13,7 +13,10 @@ once media_cache has a copy, streamed while it downloads -- and the ShotGrid
 thumbnail last. The notes panel sits on the right, full screen or not.
 """
 
+import hashlib
 import os
+import re
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -55,6 +58,46 @@ def local_media(version):
     return ""
 
 
+_FRAME_RE = re.compile(r"^(?P<head>.*?)(?:%0?\d*d|#+|@+)(?P<tail>.*)$")
+FFMPEG = os.environ.get("FLOW_FFMPEG", "ffmpeg")
+# Stills Qt reads without a plugin; anything else goes through ffmpeg.
+QT_STILLS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
+
+
+def first_frame(pattern):
+    """file.%04d.exr (or ####, @@@@) -> its first frame on disk, or ""."""
+    folder, name = os.path.split(pattern)
+    match = _FRAME_RE.match(name)
+    if not match or not os.path.isdir(folder):
+        return ""
+    head, tail = match.group("head"), match.group("tail")
+    frames = sorted(
+        f for f in os.listdir(folder) if f.startswith(head) and
+        f.endswith(tail) and f[len(head):len(f) - len(tail)].isdigit())
+    return os.path.join(folder, frames[0]).replace("\\", "/") \
+        if frames else ""
+
+
+def still(path):
+    """path as something QPixmap can read: EXR and DPX become a PNG in the
+    temp folder through ffmpeg. "" when that fails."""
+    if not path or path.lower().endswith(QT_STILLS):
+        return path
+    key = "{0}@{1}".format(path, os.path.getmtime(path)).encode("utf-8")
+    out = os.path.join(tempfile.gettempdir(), "flow-still-{0}.png".format(
+        hashlib.md5(key).hexdigest()))
+    if not os.path.isfile(out):
+        try:
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", path,
+                            "-frames:v", "1", out], timeout=30, check=True,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as e:
+            log.warning("no still of %s: %s", path, e)
+            return ""
+    return out
+
+
 stream_url = media_cache.upload_url
 
 
@@ -76,6 +119,10 @@ class VersionMedia:
         self.version = version
         self.path = local_media(version)
         self.stream = "" if self.path else stream_url(version)
+        if not self.path and not self.stream:
+            # Frames only (an annotation render): show the first one.
+            self.path = still(first_frame(
+                version.get("sg_path_to_frames") or ""))
         # Anything local that is not a still goes to the player, which says so
         # itself if it cannot decode it.
         if self.path:

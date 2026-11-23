@@ -73,8 +73,15 @@ def test_the_write_path_follows_the_script_name():
     assert path.startswith(Ctx.entity_root + "/nuke/renders/")
     assert path.endswith(".%04d.exr") and "[value root.name]" in path
     named = plates.write_path(Ctx(), "/work/sh_comp_v0002.nk")
-    assert named == Ctx.entity_root + \
-        "/nuke/renders/sh_comp_v0002/sh_comp_v0002.%04d.exr"
+    assert named == Ctx.entity_root + "/nuke/renders/sh_comp_v0002/" \
+        "for_approval/sh_comp_v0002/sh_comp_v0002.%04d.exr"
+    assert plates.workfile_for(named, "/work/sh_comp_v0002.nk") == \
+        Ctx.entity_root + "/nuke/renders/sh_comp_v0002/workfile/" \
+        "sh_comp_v0002.nk"
+    assert plates.workfile_for("/x/sh/sh.%04d.exr", "/w/sh.nk") is None
+    Ctx.department = "prep"
+    assert plates.write_path(Ctx(), "/w/sh_prep_v0001.nk").startswith(
+        Ctx.entity_root + "/elements/prep/sh_prep_v0001/for_approval/")
     Ctx.entity_root = ""
     assert plates.write_path(Ctx()) is None
 
@@ -90,6 +97,8 @@ class _Knob:
 
     def value(self):
         return self._value
+
+    evaluate = value
 
 
 class _Node:
@@ -107,6 +116,9 @@ class _Node:
     def knobs(self):
         return self._knobs
 
+    def addKnob(self, knob):
+        self._knobs[knob.name] = knob
+
     def xpos(self):
         return 0
 
@@ -118,6 +130,15 @@ class _Node:
 
     def format(self):
         return _Format(640, 480, 1.0, "")       # what a Read reports: unnamed
+
+
+class _NamedKnob(_Knob):
+    def __init__(self, name, label=None):
+        super().__init__()
+        self.name = name
+
+    def setTooltip(self, text):
+        pass
 
 
 class _Format:
@@ -154,6 +175,7 @@ def _fake_nuke(made):
         return make
     nuke.nodes = types.SimpleNamespace(Read=maker("Read"), Write=maker("Write"))
     nuke.message = lambda text: None
+    nuke.Tab_Knob = nuke.Boolean_Knob = _NamedKnob
     nuke.formats = lambda: [_Format(1920, 1080, 1.0, "HD_1080")]
     nuke.added_formats = []
     nuke.addFormat = nuke.added_formats.append
@@ -204,12 +226,17 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         assert root["format"].value() == "Flow_640x480"     # named, no warning
         assert fake.added_formats == ["640 480 1.0 Flow_640x480"]
         assert write.inputs == [read]
-        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/AD1030_jitesh_comp_v0001/"             "AD1030_jitesh_comp_v0001.%04d.exr"
+        assert write["file"].value() == env["FLOW_ENTITY_ROOT"] +             "/nuke/renders/AD1030_jitesh_comp_v0001/for_approval/"             "AD1030_jitesh_comp_v0001/AD1030_jitesh_comp_v0001.%04d.exr"
+        assert write[adapter.FOLLOW].value() is True
 
         fake.allNodes = lambda *a: [write]          # Version Up re-points it
         adapter.save_scene(work + "AD1030_jitesh_comp_v0002.nk")
         assert "/AD1030_jitesh_comp_v0002/" in write["file"].value()
-        fake.saved.pop()
+        write[adapter.FOLLOW].setValue(False)       # kept at v0002 on purpose
+        adapter.save_scene(work + "AD1030_jitesh_comp_v0003.nk")
+        assert "/AD1030_jitesh_comp_v0002/" in write["file"].value()
+        write[adapter.FOLLOW].setValue(True)
+        del fake.saved[2:]
 
         existing = list(made)
         fake.allNodes = lambda *a: existing
@@ -241,10 +268,11 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
         picker.ask_start = lambda *a: ("new", "roto", None)
         adapter.action_load_file()        # New, in another department
         roto = env["FLOW_ENTITY_ROOT"] + \
-            "/nuke/roto/scene/AD1030_jitesh_roto_v0001.nk"
+            "/nuke/roto/scene/jitesh/AD1030_jitesh_roto_v0001.nk"
         assert fake.saved[2:] == [roto, roto]   # with a plate and a Write
         assert [n.Class() for n in made] == ["Read", "Read", "Write"]
-        assert "/AD1030_jitesh_roto_v0001/" in made[2]["file"].value()
+        assert made[2]["file"].value().startswith(
+            env["FLOW_ENTITY_ROOT"] + "/nuke/roto/renders/AD1030_jitesh_roto_v0001/")
     finally:
         picker.ask_start = real_ask
         os.environ.pop("FLOW_DEPARTMENT", None)
@@ -258,3 +286,73 @@ def test_a_shot_tasks_first_script_is_built_and_saved_as_v0001():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def test_a_render_copies_its_script_into_workfile():
+    from flow_dcc.adapters import nuke as adapter
+    made = []
+    fake, root = _fake_nuke(made)
+    root.modified = lambda: False
+    shot = tempfile.mkdtemp().replace("\\", "/")
+    scene = shot + "/nuke/comp/scene/AD1030_jitesh_comp_v0002.nk"
+    _touch(shot, "nuke/comp/scene/AD1030_jitesh_comp_v0002.nk", 10)
+    frames = shot + "/nuke/renders/AD1030_jitesh_comp_v0002/for_approval/" \
+        "AD1030_jitesh_comp_v0002/AD1030_jitesh_comp_v0002.%04d.exr"
+    write = _Node(file=frames, disable=False)
+    other = _Node(file="/elsewhere/out.%04d.exr", disable=False)
+    fake.allNodes = lambda *a: [write, other]
+    sys.modules["nuke"] = fake
+    try:
+        copied = adapter.snapshot_workfiles(scene)
+    finally:
+        del sys.modules["nuke"]
+    target = shot + "/nuke/renders/AD1030_jitesh_comp_v0002/workfile/" \
+        "AD1030_jitesh_comp_v0002.nk"
+    assert copied == [target] and os.path.isfile(target)
+    assert adapter.snapshot_workfiles("") == []
+
+
+def test_annotation_files_go_to_the_projects_reference_folder():
+    from flow_dcc import review
+
+    class Ctx:
+        entity_root = tempfile.mkdtemp().replace("\\", "/") + \
+            "/3cbien_Test/sequences/SEQ001/shots/MV_001_010_01040417_v001"
+    project = Ctx.entity_root.split("/sequences/")[0]
+    notes = project + "/Reference/Annotated_notes/"
+    plate = "/x/MV_001_010_01040417_v001.%04d.exr"
+    assert review.annotated_note_path(plate, 1001, Ctx()) == \
+        notes + "MV_001_010_01040417_v001_1001_v001.jpg"
+    _touch(notes, "MV_001_010_01040417_v001_1001_v001.jpg", 10)
+    assert review.annotated_note_path(plate, 1001, Ctx()).endswith(
+        "_1001_v002.jpg")
+    assert review.annotated_note_path("/x/bg.1001.exr", 1001.0, Ctx()) \
+        .endswith("/bg_1001_v001.jpg")
+    assert review.annotated_note_path("Read3", 12, Ctx()).endswith(
+        "/Read3_12_v001.jpg")
+    Ctx.entity_root = "/elsewhere/AD1030"
+    assert review.annotated_note_path(plate, 1, Ctx()) is None
+
+
+def test_a_roto_publish_copies_its_render_folder_to_elements():
+    class Ctx:
+        entity_root = tempfile.mkdtemp().replace("\\", "/")
+        department = "roto"
+    name = "AD1030_jitesh_roto_v0002"
+    render = Ctx.entity_root + "/nuke/roto/renders/" + name
+    _touch(render, "workfile/" + name + ".nk", 10)
+    _touch(render, "for_approval/{0}/{0}.1001.exr".format(name), 10)
+    assert plates.write_path(Ctx(), "/w/" + name + ".nk").startswith(
+        render + "/for_approval/" + name + "/")
+    copied = plates.publish_copy(render, Ctx())
+    assert copied == Ctx.entity_root + "/elements/roto/" + name
+    assert os.path.isfile(copied + "/workfile/" + name + ".nk")
+    assert os.path.isfile(copied + "/for_approval/{0}/{0}.1001.exr".format(
+        name))
+    try:
+        plates.publish_copy(render, Ctx())
+        assert False, "a second publish must not overwrite the first"
+    except ValueError:
+        pass
+    Ctx.department = "comp"
+    assert plates.publish_copy(render, Ctx()) is None

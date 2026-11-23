@@ -90,6 +90,36 @@ def annotation_path(shot, department, when=None, ctx=None):
         root, ANNOTATIONS, paths.department_code(department), name)
 
 
+NOTES_FOLDER = "Reference/Annotated_notes"
+_FRAME_TAIL_RE = re.compile(r"(?:[._](?:%0?\d*d|#+|@+|\d+))?\.[^.]+$")
+
+
+def project_root(ctx=None):
+    """/jobs/3cbien_Test: the entity root up to its sequences/ or assets/."""
+    ctx = ctx or context.get()
+    root = (ctx.entity_root or "").rstrip("/")
+    for marker in ("/sequences/", "/assets/"):
+        if marker in root:
+            return root.split(marker)[0]
+    return None
+
+
+def annotated_note_path(source, frame, ctx=None):
+    """<project>/Reference/Annotated_notes/<source>_<frame>_v001.jpg, the
+    next free version. source is a Read's file (its name without frame
+    number and extension is used) or a node name."""
+    root = project_root(ctx)
+    if not root:
+        return None
+    stem = _FRAME_TAIL_RE.sub("", os.path.basename(source)) or source
+    folder = root + "/" + NOTES_FOLDER
+    head = "{0}_{1}".format(stem, int(frame))
+    taken = [int(m.group(1)) for m in (
+        re.search(r"_v(\d+)\.jpg$", f) for f in
+        glob.glob(os.path.join(folder, glob.escape(head) + "_v*.jpg"))) if m]
+    return "{0}/{1}_v{2:03d}.jpg".format(folder, head, max(taken or [0]) + 1)
+
+
 # -- which shots ----------------------------------------------------------
 
 def me(sg, ctx=None):

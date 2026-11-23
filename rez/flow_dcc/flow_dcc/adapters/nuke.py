@@ -6,11 +6,12 @@ imported and tested outside Nuke.
 
 import logging
 import os
+import shutil
 import sys
 
 from . import MENU_NAME, actions, common
 from .. import (context, lock, paths, picker, plates, publish, review,
-                shotgrid)
+                shotgrid, version_publish)
 
 # Nuke shows the logger in its terminal; a bare sys.stdout.write may not.
 log = logging.getLogger("flow")
@@ -39,12 +40,80 @@ def install():
     menu.addCommand("Task Panel...", module.action_task_panel)
     menu.addSeparator()
     menu.addCommand("Open Sequence Review...", open_sequence_review)
-    menu.addCommand("Create Annotation Folders", create_annotation_folders)
+    menu.addCommand("Create Annotation File", create_annotation_file)
     menu.addCommand("Retry Pending Notes", retry_pending_notes)
+    menu.addCommand("Retry Pending Publishes", retry_pending_publishes)
     nuke.addOnScriptLoad(_on_load)
     nuke.addOnScriptSave(_on_save)
+    nuke.addBeforeRender(_before_render)
     _after_startup(setup_empty_script)
+    _after_startup(_resume_publishes)
+    _after_startup(_watch_idle)
     return True
+
+
+# -- idle script lock (flow_dcc/lock.py) ------------------------------------
+
+_idle = {"active": 0.0, "released": None, "told": None}
+
+
+def _watch_idle(every=60000):
+    """Keep the open script's lock fresh while the artist works; give it up
+    after lock.IDLE_MINUTES without a key or a click, so a lead can open the
+    script (Nuke's own autosave holds what was not saved)."""
+    try:
+        from PySide6.QtCore import QEvent, QObject, QTimer
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        from PySide2.QtCore import QEvent, QObject, QTimer
+        from PySide2.QtWidgets import QApplication
+    import time
+    kinds = (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.Wheel)
+
+    class Activity(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() in kinds:
+                _idle["active"] = time.time()
+            return False
+
+    _idle["active"] = time.time()
+    watcher = Activity()
+    QApplication.instance().installEventFilter(watcher)
+    timer = QTimer()
+    timer.timeout.connect(lambda: _idle_tick(time.time()))
+    _watching.extend([watcher, timer])
+    timer.start(every)
+
+
+def _idle_tick(now):
+    path = current_scene()
+    if not path:
+        return
+    idle = now - _idle["active"] > lock.IDLE_MINUTES * 60
+    if idle:
+        if _idle["released"] != path:
+            lock.release(path)
+            _idle["released"] = path
+            log.info("idle %d min: gave up the lock on %s", lock.IDLE_MINUTES,
+                     path)
+        return
+    if lock.touch(path):
+        return
+    # Back from idle, or a reviewer took the file: take it back if free.
+    info = lock.holder(path)
+    if info is None:
+        try:
+            lock.take(path)
+            lock.keep_only(path)
+            _idle["released"] = None
+            return
+        except Exception:
+            info = lock.holder(path) or {}
+    if _idle["told"] != (path, info.get("user")):
+        _idle["told"] = (path, info.get("user"))
+        message("{0} was opened by {1} while this Nuke was idle.\n\nDo not "
+                "save over it: Save As a new version to keep your changes."
+                .format(os.path.basename(path), lock.describe(info)))
 
 
 def _on_save():
@@ -251,6 +320,12 @@ def setup_shot(quiet=False):
     write = nuke.nodes.Write(inputs=[read] if read else [])
     write["file"].setValue(path)
     write["file_type"].setValue("exr")
+    write.addKnob(nuke.Tab_Knob("flow", "Flow"))
+    follow = nuke.Boolean_Knob(FOLLOW, "Follow script version")
+    follow.setValue(True)
+    follow.setTooltip("Ticked: saving a new script version renders to the "
+                      "new version. Unticked: this Write keeps its path.")
+    write.addKnob(follow)
     if "create_directories" in write.knobs():
         write["create_directories"].setValue(True)
     if read:
@@ -264,17 +339,59 @@ def save_scene(path):
     return path
 
 
+FOLLOW = "flow_follow_version"
+
+
 def _retarget_writes(script):
-    """Point Writes that render into the render folder at script's own
-    subfolder, so Version Up renders v0002 beside v0001, not over it."""
-    folder = plates.renders_dir()
-    if not folder or not script:
+    """Point Writes that render into a render folder at script's own
+    subfolder, so Version Up renders v0002 beside v0001, not over it.
+
+    A Write with "Follow script version" unticked keeps its path; one made
+    before the checkbox existed follows. Writes under another department's
+    render folder, or the pre-for_approval layout, move to this one's.
+    """
+    roots = plates.render_roots()
+    if not roots or not script:
         return
     target = plates.write_path(script=script)
     for node in _nuke().allNodes("Write"):
-        current = node["file"].value() or ""
-        if os.path.dirname(os.path.dirname(current)) == folder:
+        if FOLLOW in node.knobs() and not node[FOLLOW].value():
+            continue
+        current = (node["file"].value() or "").replace("\\", "/")
+        if any(current.startswith(root + "/") for root in roots):
             node["file"].setValue(target)
+
+
+def _before_render():
+    """A Write rendering into <name>/for_approval/ gets the script it was
+    rendered from copied into <name>/workfile/. Never stops the render."""
+    try:
+        node = _nuke().thisNode()
+        snapshot_workfiles(current_scene(), [node["file"].evaluate()])
+    except Exception as e:
+        log.warning("workfile copy skipped: %s", e)
+
+
+def snapshot_workfiles(scene, frames=None):
+    """Save the script and copy it into the workfile/ folder of each render
+    path in frames (every Write's, by default). Deadline calls this too."""
+    if not scene:
+        return []
+    nuke = _nuke()
+    if frames is None:
+        frames = [n["file"].evaluate() for n in nuke.allNodes("Write")
+                  if not n["disable"].value()]
+    targets = set(filter(None, (plates.workfile_for(f or "", scene)
+                                for f in frames)))
+    if targets and nuke.root().modified():
+        nuke.scriptSave()                       # the copy matches the render
+    for target in sorted(targets):
+        folder = os.path.dirname(target)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        shutil.copy2(scene, target)
+        log.info("workfile %s", target)
+    return sorted(targets)
 
 
 def open_scene(path):
@@ -472,18 +589,165 @@ def retry_pending_notes():
     return message(text)
 
 
-def create_annotation_folders():
-    """elements/images/annotation/<dept> for every department, this shot."""
+def create_annotation_file():
+    """The Viewer's current frame, as drawn, to a JPEG for internal notes:
+    <project>/Reference/Annotated_notes/<read>_<frame>_v001.jpg. Not posted
+    to ShotGrid: these are for iterating, not for review."""
+    nuke = _nuke()
+    viewer = nuke.activeViewer()
+    node = viewer.node().input(viewer.activeInput() or 0) if viewer else None
+    if node is None:
+        return message("Connect the Viewer to the node to grab, then try "
+                       "again.")
+    read = _upstream_read(node)
+    source = read["file"].value() if read else node.name()
+    frame = int(nuke.frame())
+    path = review.annotated_note_path(source, frame)
+    if not path:
+        return message("Launch Nuke from Flow on a task first: Flow needs "
+                       "the project folder.")
+    folder = os.path.dirname(path)
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    write = nuke.nodes.Write(inputs=[node])
+    try:
+        write["file"].setValue(path)
+        write["file_type"].setValue("jpeg")
+        nuke.execute(write, frame, frame)
+    except Exception as e:
+        return message("Could not render the frame: {0}".format(e))
+    finally:
+        nuke.delete(write)
+    log.info("annotation %s", path)
+    return message("Saved\n{0}".format(path))
+
+
+def _upstream_read(node, seen=None):
+    """node if it is a Read, else the nearest Read above it (input 0 first),
+    or None."""
+    seen = seen if seen is not None else set()
+    if node is None or node.name() in seen:
+        return None
+    seen.add(node.name())
+    if node.Class() == "Read":
+        return node
+    for i in range(node.inputs()):
+        found = _upstream_read(node.input(i), seen)
+        if found is not None:
+            return found
+    return None
+
+
+# -- Publish (flow_dcc/version_publish.py) --------------------------------
+
+def action_publish():
+    """Publish the open script's render: no questions asked.
+
+    The script that rendered (its workfile/ copy) goes to the publish folder
+    and ShotGrid; the movie, the Version, its upload and the mail happen in a
+    background process, so the artist keeps working. A script with no render
+    is not published: a Version without frames has nothing to review.
+    """
+    nuke = _nuke()
     ctx = context.get()
-    if not ctx.entity_root:
-        return message("Launch Nuke from Flow on a shot task first.")
-    base = ctx.entity_root.rstrip("/") + "/" + review.ANNOTATIONS
-    for department in set(paths.department_code(d)
-                          for d in paths.DEPARTMENTS):
-        folder = base + "/" + department
-        if not os.path.isdir(folder):
-            os.makedirs(folder)
-    return message("Annotation folders are ready in\n{0}".format(base))
+    scene = current_scene()
+    if not scene or not ctx.has_task:
+        return message("Open a script from Flow on a task, render it, then "
+                       "Publish.")
+    try:
+        publish.validate(ctx)
+        if nuke.root().modified():
+            nuke.scriptSave()
+        name = os.path.splitext(os.path.basename(scene))[0]
+        folder = os.path.dirname(plates.write_path(ctx, scene))
+        frames = plates.find_plate(folder)
+        if not frames or frames["first"] is None:
+            return message("{0} has no render yet. Render its Write to\n{1}"
+                           "\nthen Publish.".format(name, folder))
+        target = paths.publish_for(scene, ctx)
+        if os.path.exists(target):
+            return message("{0} is already published:\n{1}\n\nVersion Up, "
+                           "render and publish again.".format(name, target))
+        workfile = (snapshot_workfiles(scene, [frames["path"]]) or
+                    [scene])[0]
+        # Roto: the whole <name>/ folder goes to elements/roto/ as well.
+        copied = plates.publish_copy(os.path.dirname(os.path.dirname(
+            folder)), ctx)
+        if copied:
+            frames = plates.find_plate(
+                copied + "/" + plates.FOR_APPROVAL + "/" + name)
+        result = publish.publish_file(workfile, ctx)
+        job = version_publish.entry(name, frames["path"], frames["first"],
+                                    frames["last"], ctx)
+        process = version_publish.start(job, nuke.EXE_PATH)
+    except publish.PublishError as e:
+        return message(str(e))
+    except Exception as e:
+        return message("Publish failed: {0}".format(e))
+    _watch(job, process)
+    text = ("Publishing {0}.\n\nThe script is published{1}. The movie is "
+            "being made and uploaded to ShotGrid in the background: keep "
+            "working. A mail goes to {2} when it is done.").format(
+                name, "" if result.registered else
+                " on disk (not in ShotGrid: {0})".format(
+                    result.registration_error),
+                job["email"] or "you")
+    message(text)
+    return job
+
+
+def _watch(job, process, every=5000):
+    """Tell the artist how the background publish ended."""
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        from PySide2.QtCore import QTimer
+    timer = QTimer()
+    timer.setInterval(every)
+
+    def check():
+        if process.poll() is None:
+            return
+        timer.stop()
+        _watching.remove(timer)
+        if not os.path.isfile(job["_file"]):
+            log.info("published %s", job["name"])
+            return message("{0} is published to ShotGrid.".format(
+                job["name"]))
+        failed = version_publish.load(job["_file"])
+        message("Publishing {0} stopped at {1}\n\nWhat is done stays done. "
+                "Use {2} > Retry Pending Publishes to finish it.\nLog: {3}"
+                .format(job["name"], failed.get("error") or "an unknown step",
+                        MENU_NAME, os.path.splitext(job["_file"])[0] +
+                        ".log"))
+
+    timer.timeout.connect(check)
+    _watching.append(timer)             # a QTimer nobody holds is collected
+    timer.start()
+
+
+_watching = []
+
+
+def retry_pending_publishes(quiet=False):
+    """Restart this machine's publishes whose worker failed or died."""
+    nuke = _nuke()
+    jobs = [j for j in version_publish.pending()
+            if version_publish.stalled(j)]
+    for job in jobs:
+        job["error"] = ""
+        _watch(job, version_publish.start(job, nuke.EXE_PATH))
+    if jobs or not quiet:
+        message("{0} publish(es) restarted in the background.".format(
+            len(jobs)) if jobs else "No publishes are waiting.")
+    return jobs
+
+
+def _resume_publishes():
+    try:
+        retry_pending_publishes(quiet=True)
+    except Exception as e:
+        log.warning("could not resume publishes: %s", e)
 
 
 # -- Deadline -------------------------------------------------------------

@@ -7,11 +7,34 @@ imported here, so this can be tested outside Nuke.
 
 import os
 import re
+import shutil
 
 from . import context
 
 PLATES = "elements/plates"
 RENDERS = "nuke/renders"
+# Departments whose renders go elsewhere than nuke/renders (lead feedback).
+DEPARTMENT_RENDERS = {"prep": "elements/prep", "roto": "nuke/roto/renders"}
+WORKFILE = "workfile"
+FOR_APPROVAL = "for_approval"
+# Publish copies a department's <name>/ render folder here (lead feedback).
+PUBLISH_COPIES = {"roto": "elements/roto"}
+
+
+def publish_copy(render_folder, ctx=None):
+    """Copy <renders>/<name>/ (workfile/ and for_approval/) to the
+    department's publish folder, e.g. elements/roto/<name>/. Returns the new
+    folder, or None for a department that publishes in place."""
+    ctx = ctx or context.get()
+    target = PUBLISH_COPIES.get((ctx.department or "").lower())
+    if not target or not ctx.entity_root:
+        return None
+    destination = "{0}/{1}/{2}".format(ctx.entity_root, target,
+                                       os.path.basename(render_folder))
+    if os.path.exists(destination):
+        raise ValueError("Already published:\n" + destination)
+    shutil.copytree(render_folder, destination)
+    return destination
 
 IMAGES = (".exr", ".dpx", ".tif", ".tiff", ".png", ".jpg", ".jpeg")
 MOVIES = (".mov", ".mp4", ".mxf")
@@ -26,8 +49,23 @@ def plates_dir(ctx=None):
 
 
 def renders_dir(ctx=None):
+    """This department's render folder: nuke/renders, or elements/prep for
+    prep and nuke/roto/renders for roto."""
     ctx = ctx or context.get()
-    return ctx.entity_root + "/" + RENDERS if ctx.entity_root else None
+    if not ctx.entity_root:
+        return None
+    department = (getattr(ctx, "department", "") or "").lower()
+    return ctx.entity_root + "/" + DEPARTMENT_RENDERS.get(department, RENDERS)
+
+
+def render_roots(ctx=None):
+    """Every department's render folder on this shot, for re-pointing a
+    Write saved under another department's (or an older) layout."""
+    ctx = ctx or context.get()
+    if not ctx.entity_root:
+        return []
+    return [ctx.entity_root + "/" + r
+            for r in [RENDERS] + list(DEPARTMENT_RENDERS.values())]
 
 
 def find_plate(root):
@@ -101,7 +139,9 @@ def _scan(root):
 
 
 def write_path(ctx=None, script=None):
-    """Nuke Write path under the render folder, named after the script.
+    """Nuke Write path under the render folder, named after the script:
+    <renders>/<name>/for_approval/<name>/<name>.%04d.exr. The script itself
+    is copied beside it, into <renders>/<name>/workfile/ (workfile_for).
 
     A plain path an artist can read; the Nuke adapter re-points it when the
     script is saved under a new version. An unsaved script has no name yet,
@@ -114,4 +154,15 @@ def write_path(ctx=None, script=None):
         name = os.path.splitext(os.path.basename(script))[0]
     else:
         name = "[file rootname [file tail [value root.name]]]"
-    return "{0}/{1}/{1}.%04d.exr".format(folder, name)
+    return "{0}/{1}/{2}/{1}/{1}.%04d.exr".format(folder, name, FOR_APPROVAL)
+
+
+def workfile_for(frames, script):
+    """Where script is copied when frames render, or None when frames are
+    not in the for_approval layout: .../<name>/workfile/<script name>."""
+    frames = frames.replace("\\", "/")
+    approval = os.path.dirname(os.path.dirname(frames))
+    if os.path.basename(approval) != FOR_APPROVAL:
+        return None
+    return "{0}/{1}/{2}".format(os.path.dirname(approval), WORKFILE,
+                                os.path.basename(script))

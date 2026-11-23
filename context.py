@@ -123,6 +123,9 @@ def env(ctx, path):
         # registration. A DCC ships its own Python with its own site-packages
         # and cannot see Flow's venv otherwise.
         "FLOW_SG_API_PATH": _sg_api_path(),
+        # The pipeline's mailer (services/mailer.py): Nuke's background
+        # publish mails the artist when the movie is on ShotGrid.
+        "FLOW_PIPELINE_ROOT": config.PIPELINE_ROOT,
     }
     return out
 

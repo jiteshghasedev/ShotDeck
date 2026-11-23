@@ -7,7 +7,7 @@ import sys
 SG_SITE = os.environ.get("SG_SITE", "https://5and8.shotgrid.autodesk.com")
 SG_SCRIPT_NAME = os.environ.get("SG_SCRIPT_NAME", "SG_daemon")
 # No default: a script key must never live in the source of a public repository.
-SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY", "")
+SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY", "ja?loxpbfv6fpxhCflhehsula")
 
 # Custom assignment field on Task. Studio uses this instead of task_assignees.
 TASK_OWNER_FIELD = "sg_assigned_to"

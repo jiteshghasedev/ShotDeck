@@ -11,8 +11,8 @@ import os
 import subprocess
 import sys
 
-from .. import (context, deadline, lock, paths, picker, publish, usd,
-                versioning)
+from .. import (context, deadline, lock, paths, picker, publish, shotgrid,
+                usd, versioning)
 
 
 def save(adapter):
@@ -72,7 +72,7 @@ def save_as(adapter):
         return None
     lock.keep_only(path)
 
-    if not _under(path, paths.work_dir()):
+    if not _under(path, paths.work_root()):
         adapter.message(
             "Saved {0}\n\nNote: this is outside the task's work folder, so "
             "Flow will not count it when working out the next version."
@@ -260,11 +260,22 @@ def claim(adapter, path):
                                              info.get("time"))):
             return False
         force = True
+    elif info and is_reviewer():
+        if not adapter.confirm(
+                "{0} is open by {1}.\n\nYou review this task: take the file "
+                "over? Their Flow is told; anything they have not saved is "
+                "only in their autosave.".format(os.path.basename(path),
+                                                  lock.describe(info))):
+            return False
+        force = True
     elif info:
         adapter.message(
             "{0} is open by {1}.\n\nOnly one person can work in a file at a "
-            "time. Ask them to close it, or open another version.".format(
-                os.path.basename(path), lock.describe(info)))
+            "time. Ask them to close it, or open another version. After {2} "
+            "idle minutes it is freed for you, and a reviewer on the task can "
+            "take it over now.".format(
+                os.path.basename(path), lock.describe(info),
+                lock.IDLE_MINUTES))
         return False
     try:
         lock.take(path, force=force)
@@ -275,6 +286,34 @@ def claim(adapter, path):
         # A folder the lock cannot be written in must not stop the work.
         sys.stdout.write("Flow: could not lock {0}: {1}\n".format(path, e))
     return True
+
+
+LEAD_FIELD = os.environ.get("FLOW_TASK_LEAD_FIELD", "task_reviewers")
+_reviewer = {}                  # task id -> this artist reviews it
+
+
+def is_reviewer(ctx=None):
+    """Whether this artist reviews the launch task (its leads and
+    supervisors). Asked of ShotGrid once per session; no answer is a no."""
+    ctx = ctx or context.get()
+    if not ctx.task_id:
+        return False
+    if ctx.task_id not in _reviewer:
+        email = os.environ.get("FLOW_USER_EMAIL", "").lower()
+        try:
+            sg = shotgrid.connect()
+            task = sg.find_one("Task", [["id", "is", ctx.task_id]],
+                               [LEAD_FIELD]) or {}
+            ids = [u["id"] for u in task.get(LEAD_FIELD) or []
+                   if u.get("type") == "HumanUser"]
+            users = sg.find("HumanUser", [["id", "in", ids]],
+                            ["email"]) if ids else []
+        except Exception as e:
+            sys.stdout.write("Flow: reviewer check skipped: {0}\n".format(e))
+            return False
+        _reviewer[ctx.task_id] = bool(email) and email in [
+            (u.get("email") or "").lower() for u in users]
+    return _reviewer[ctx.task_id]
 
 
 def opening(adapter, path):

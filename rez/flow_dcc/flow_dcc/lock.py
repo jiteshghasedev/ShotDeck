@@ -10,8 +10,12 @@ on the same workstation a dead pid frees it, and an artist can take their own
 lock over from another workstation (common asks first). Anyone else's lock
 is cleared by that artist reopening the file, or by deleting the .lock file.
 
-shortcut: no heartbeat, so another artist's crashed session blocks the file
-until the lock is deleted; add one if that turns out to be common.
+A session that is in use refreshes the lock's "seen" time (touch). One
+left idle for IDLE_MINUTES gives its lock up itself (Nuke: Flow's idle
+check), and a lock not refreshed for that long -- a crashed session on
+another workstation -- counts as free. Either way the next person to open
+the file gets the host's own autosave offer. A task's reviewers (leads,
+supervisors) can also take over a lock that is still live; common asks.
 """
 
 import atexit
@@ -25,6 +29,8 @@ import time
 from . import context
 
 _held = set()             # normalised paths this session holds
+
+IDLE_MINUTES = int(os.environ.get("FLOW_LOCK_IDLE_MINUTES", "60"))
 
 
 class Locked(Exception):
@@ -47,9 +53,20 @@ def me():
 
 
 def describe(info):
-    return "{0} on {1} since {2}".format(info.get("user") or "someone",
+    text = "{0} on {1} since {2}".format(info.get("user") or "someone",
                                          info.get("host") or "?",
                                          info.get("time") or "?")
+    if info.get("seen"):
+        text += ", last active {0}".format(
+            time.strftime("%H:%M", time.localtime(info["seen"])))
+    return text
+
+
+def stale(info, now=None):
+    """Not refreshed for IDLE_MINUTES: idle, or its session is gone. A lock
+    written before heartbeats existed is never stale."""
+    seen = info.get("seen")
+    return bool(seen) and (now or time.time()) - seen > IDLE_MINUTES * 60
 
 
 def holder(path):
@@ -67,6 +84,8 @@ def holder(path):
     if info.get("host") == mine["host"]:
         if info.get("pid") == mine["pid"] or not _alive(info.get("pid")):
             return None
+    if stale(info):
+        return None
     return info
 
 
@@ -79,7 +98,7 @@ def take(path, force=False):
     target = lock_path(path)
     if os.path.exists(target):            # ours, stale, or forced
         _remove(target)
-    data = dict(me(), time=time.strftime("%Y-%m-%d %H:%M"))
+    data = dict(me(), time=time.strftime("%Y-%m-%d %H:%M"), seen=time.time())
     try:
         fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o664)
     except OSError as e:
@@ -89,6 +108,26 @@ def take(path, force=False):
     with os.fdopen(fd, "w") as f:
         json.dump(data, f)
     _held.add(_norm(path))
+
+
+def touch(path):
+    """This session is in use: refresh its lock's "seen" time. False when
+    the lock on path is no longer this session's (given up, or taken)."""
+    target = lock_path(path)
+    try:
+        with open(target) as f:
+            info = json.load(f)
+    except (OSError, IOError, ValueError):
+        return False
+    mine = me()
+    if info.get("host") != mine["host"] or info.get("pid") != mine["pid"]:
+        return False
+    info["seen"] = time.time()
+    tmp = target + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(info, f)
+    os.replace(tmp, target)
+    return True
 
 
 def keep_only(path):

@@ -217,6 +217,11 @@ class NotesPanel(QWidget):
         self._cooldown.stop()           # another version is not a re-read
         self.refresh()
 
+    def reload(self):
+        """Re-read now: notes were posted elsewhere (the player)."""
+        self._cooldown.stop()
+        self.refresh()
+
     def refresh(self):
         if not self.version:
             return

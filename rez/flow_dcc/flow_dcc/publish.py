@@ -159,6 +159,14 @@ def publish(adapter, ctx=None, description=""):
             .format(ctx.software or "The DCC", work_path))
     hold(work_path)
 
+    return publish_file(work_path, ctx, description)
+
+
+def publish_file(work_path, ctx=None, description=""):
+    """Copy a saved, versioned work file to the publish folder under its own
+    name and register it. Returns a Result. Nuke publishes the script it
+    rendered this way, without saving a new version first."""
+    ctx = ctx or context.get()
     version = versioning.version_in(work_path)
     if version is None:
         raise PublishError(

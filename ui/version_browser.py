@@ -768,11 +768,13 @@ class VersionBrowser(QDialog):
         self._stop_player()
         VersionCompare(self.sg, self.project, version_a, version_b,
                        versions=self._versions, parent=self).exec()
+        self.notes.reload()             # notes posted in the player
 
     def _play_in_flow(self, version):
         self._stop_player()
         VersionCompare(self.sg, self.project, version, None,
                        versions=self._versions, parent=self).exec()
+        self.notes.reload()             # notes posted in the player
 
     def _open_row(self, index):
         if 0 <= index.row() < len(self._versions):

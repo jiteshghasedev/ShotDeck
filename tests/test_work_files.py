@@ -194,6 +194,38 @@ def test_my_own_lock_from_another_machine_can_be_taken_over(shot, work):
 
 
 @_with_shot
+def test_an_idle_lock_frees_the_file_and_a_reviewer_can_take_a_live_one(
+        shot, work):
+    import time
+    _touch(work, "AD1030_rahul_Anim_v0001.ma")
+    path = work + "/" + "AD1030_rahul_Anim_v0001.ma"
+    _foreign_lock(path, "rahul")
+    info = json.load(open(lock.lock_path(path)))
+    info["seen"] = time.time() - (lock.IDLE_MINUTES * 60 + 5)   # gone idle
+    json.dump(info, open(lock.lock_path(path), "w"))
+    assert lock.holder(path) is None
+    host = _Host()
+    host.answer = False                         # keep it as rahul's file
+    assert common.open_path(host, path) == path
+    assert lock.touch(path)                     # mine now: kept fresh
+    assert not lock.stale(json.load(open(lock.lock_path(path))))
+    lock.release_all()
+
+    _foreign_lock(path, "rahul")                # live, no heartbeat yet
+    common._reviewer[42] = True                 # this artist reviews task 42
+    try:
+        host = _Host()
+        host.answer = True
+        assert common.open_path(host, path)
+        assert "You review this task" in host.told[0]
+        assert lock.holder(path) is None        # rahul's lock is gone
+    finally:
+        common._reviewer.clear()
+        lock.release_all()
+    assert not lock.touch(path)                 # released: not mine
+
+
+@_with_shot
 def test_a_crashed_session_on_this_machine_does_not_block(shot, work):
     if os.name != "posix":
         return                     # no safe liveness check on Windows
@@ -239,6 +271,23 @@ def test_names_carry_the_first_name_and_a_short_department(shot, work):
 
 
 @_with_shot
+def test_the_shots_ingest_version_is_left_out_of_names(shot, work):
+    os.environ["FLOW_ENTITY_NAME"] = "MV_003_010_02085217_v001"
+    try:
+        # a 1.7 file with the double version still counts as this artist's
+        _touch(work, "MV_003_010_02085217_v001_jitesh_Anim_v0004.ma")
+        _touch(work, "MV_003_010_02085217_v001_rahul_Anim_v0009.ma")
+        assert [(f["version"], f["user"]) for f in paths.task_files()] == \
+            [(9, "rahul"), (4, "jitesh")]
+        assert versioning.next_scene_path() == \
+            work + "/MV_003_010_02085217_jitesh_Anim_v0005.ma"
+        _touch(work, "MV_003_010_02085217_jitesh_Anim_v0005.ma")
+        assert paths.existing_versions() == [4, 5]
+    finally:
+        os.environ["FLOW_ENTITY_NAME"] = "AD1030"
+
+
+@_with_shot
 def test_opening_another_artists_file_offers_a_copy_as_mine(shot, work):
     _touch(work, "AD1030_rahul_Anim_v0003.ma")
     _touch(work, "AD1030_jitesh_Anim_v0001.ma")
@@ -261,7 +310,7 @@ def test_a_picked_department_has_its_own_folder_and_versions(shot, work):
     os.environ["FLOW_DEPARTMENT"] = "roto"
     try:
         assert versioning.next_scene_path() == \
-            roto + "/AD1030_jitesh_roto_v0003.ma"
+            roto + "/jitesh/AD1030_jitesh_roto_v0003.ma"   # own folder
     finally:
         del os.environ["FLOW_DEPARTMENT"]
     assert paths.work_dir() == work                       # back to the step
@@ -297,3 +346,23 @@ def test_the_launch_dialog_lists_a_departments_files_and_answers():
     assert seen == [(1, True), (0, False)]   # roto is empty: only New
     press("Cancel")
     assert picker.ask_start(depts, "comp", lambda d: []) is None
+
+
+@_with_shot
+def test_roto_files_go_in_each_artists_own_folder(shot, work):
+    roto = shot + "/nuke/roto/scene"
+    os.environ.update(FLOW_DEPARTMENT="roto", FLOW_SOFTWARE="nuke")
+    try:
+        _touch(roto + "/rahul", "AD1030_rahul_roto_v0002.nk", 200)
+        _touch(roto, "AD1030_jitesh_roto_v0001.nk", 100)      # before folders
+        assert paths.work_dir() == roto + "/jitesh"
+        assert [(f["version"], f["user"]) for f in paths.task_files()] == \
+            [(2, "rahul"), (1, "jitesh")]
+        assert versioning.next_scene_path() == \
+            roto + "/jitesh/AD1030_jitesh_roto_v0002.nk"
+        os.environ["FLOW_SOFTWARE"] = "silhouette"        # same folder
+        assert paths.work_dir() == roto + "/jitesh"
+        assert paths.scene_name(3) == "AD1030_jitesh_roto_v0003.sfx"
+    finally:
+        os.environ.pop("FLOW_DEPARTMENT")
+        os.environ["FLOW_SOFTWARE"] = "maya"

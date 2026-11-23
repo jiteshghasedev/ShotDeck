@@ -1178,6 +1178,27 @@ def test_search_matches_the_project_name_too():
     assert len(matches(_searchable().tasks, "show002")) == 1
 
 
+def test_the_task_dropdown_lists_and_narrows_to_one_task_name():
+    from ui.task_search import TaskSearch, matches
+
+    tasks = _searchable().tasks
+    assert [t["entity"]["name"] for t in
+            matches(tasks, "", task_name="compositing")] == \
+        ["AD1030", "XY0100"]
+    assert matches(tasks, "ad1030", task_name="Lighting")[0]["content"] == \
+        "Lighting"
+    assert matches(tasks, "") == []
+
+    search = TaskSearch()
+    search.set_tasks(tasks)
+    names = [search.task_box.itemText(i)
+             for i in range(search.task_box.count())]
+    assert names == ["All tasks", "Compositing", "Lighting"]
+    search.task_box.setCurrentIndex(2)
+    assert search.results.count() == 1      # every Lighting task, no typing
+    search.results.hide()
+
+
 def test_the_task_list_is_fetched_once_not_per_keystroke():
     from ui.task_search import TaskSearch
 

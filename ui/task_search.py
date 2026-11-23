@@ -12,8 +12,10 @@ means no query per keystroke.
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QWidget,
 )
+
+ALL_TASKS = "All tasks"
 
 MAX_RESULTS = 12
 DEBOUNCE_MS = 120
@@ -38,15 +40,25 @@ def _label(task):
     return f"{left}     {project}" if project else left
 
 
-def matches(tasks, text, limit=MAX_RESULTS):
+def task_names(tasks):
+    """The distinct task names (Comp, Prep, Roto...), for the dropdown."""
+    return sorted({t.get("content") or "" for t in tasks} - {""},
+                  key=str.lower)
+
+
+def matches(tasks, text, limit=MAX_RESULTS, task_name=""):
     """Tasks matching every word in text, entity name first.
 
     Word-by-word rather than substring, so "ad1030 comp" finds the comp task on
-    AD1030 however the two are ordered in the row.
+    AD1030 however the two are ordered in the row. task_name keeps only the
+    tasks of that name; with it, no text lists every one of them.
     """
+    if task_name:
+        tasks = [t for t in tasks
+                 if (t.get("content") or "").lower() == task_name.lower()]
     words = text.lower().split()
     if not words:
-        return []
+        return list(tasks)[:limit] if task_name else []
     found = []
     for task in tasks:
         hay = _haystack(task)
@@ -68,8 +80,18 @@ class TaskSearch(QWidget):
         self._tasks = []
         self._requested = False
 
-        lay = QVBoxLayout(self)
+        lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        # Narrows the search to one task name; fills once the list is in.
+        self.task_box = _TaskBox(self)
+        self.task_box.setObjectName("taskFilter")
+        self.task_box.setToolTip("Only this task")
+        self.task_box.addItem(ALL_TASKS)
+        self.task_box.opening.connect(self._request)
+        self.task_box.currentIndexChanged.connect(lambda _: self._refresh())
+        lay.addWidget(self.task_box)
 
         self.edit = QLineEdit()
         self.edit.setObjectName("taskSearch")
@@ -101,8 +123,24 @@ class TaskSearch(QWidget):
 
     def set_tasks(self, tasks):
         self._tasks = tasks or []
-        if self.edit.text():
+        current = self.task_box.currentText()
+        self.task_box.blockSignals(True)
+        self.task_box.clear()
+        self.task_box.addItems([ALL_TASKS] + task_names(self._tasks))
+        self.task_box.setCurrentIndex(max(0, self.task_box.findText(current)))
+        self.task_box.blockSignals(False)
+        if self.edit.text() or self._task_name():
             self._refresh()
+
+    def _task_name(self):
+        name = self.task_box.currentText()
+        return "" if name == ALL_TASKS else name
+
+    def _request(self):
+        if not self._requested:
+            # Asked for once per window, not once per keystroke.
+            self._requested = True
+            self.tasks_needed.emit()
 
     def has_tasks(self):
         return bool(self._tasks)
@@ -114,24 +152,23 @@ class TaskSearch(QWidget):
         self.edit.selectAll()
 
     def _on_text(self, text):
-        if text and not self._requested:
-            # Asked for once per window, not once per keystroke.
-            self._requested = True
-            self.tasks_needed.emit()
+        if text:
+            self._request()
         self._timer.start()
 
     def _refresh(self):
         text = self.edit.text().strip()
+        task_name = self._task_name()
         self.results.clear()
-        if not text:
+        if not text and not task_name:
             self.results.hide()
             return
 
-        found = matches(self._tasks, text)
+        found = matches(self._tasks, text, task_name=task_name)
         if not found:
             item = QListWidgetItem(
                 "Searching your tasks…" if not self._tasks
-                else f"No task matches “{text}”")
+                else f"No task matches “{text or task_name}”")
             item.setFlags(Qt.NoItemFlags)
             self.results.addItem(item)
         else:
@@ -156,6 +193,7 @@ class TaskSearch(QWidget):
         self.results.hide()
         if task:
             self.edit.clear()
+            self.task_box.setCurrentIndex(0)
             self.task_chosen.emit(task)
 
     def eventFilter(self, obj, event):
@@ -177,3 +215,12 @@ class TaskSearch(QWidget):
                     self.results.setCurrentRow(row)
                 return True
         return super().eventFilter(obj, event)
+
+
+class _TaskBox(QComboBox):
+    """A combo that asks for the task list the first time it is opened."""
+    opening = Signal()
+
+    def showPopup(self):
+        self.opening.emit()
+        super().showPopup()

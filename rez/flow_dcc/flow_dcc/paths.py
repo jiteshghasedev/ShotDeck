@@ -60,7 +60,8 @@ def normalise(software):
 LAYOUT = {
     "maya": ("maya/scenes/{step}", ".ma"),
     "nuke": ("nuke/{step}/scene", ".nk"),
-    "silhouette": ("silhouette/{step}/scene", ".sfx"),
+    # Beside Nuke's: roto works in both (lead feedback).
+    "silhouette": ("nuke/{step}/scene", ".sfx"),
     "houdini": ("houdini/hip/{step}", ".hip"),
     "blender": ("blender/scenes/{step}", ".blend"),
     "tde4": ("3DE/{step}/scene", ".3de"),
@@ -117,6 +118,11 @@ def _layout(software):
     return LAYOUT.get(normalise(software), DEFAULT_LAYOUT)
 
 
+# Departments where each artist saves into a folder of their own under the
+# work folder: nuke/roto/scene/<artist>/ (lead feedback).
+ARTIST_FOLDERS = ("roto",)
+
+
 def work_dir(ctx=None):
     """Folder this DCC's scenes belong in. None when the launch had no entity.
 
@@ -124,6 +130,16 @@ def work_dir(ctx=None):
     and the caller has to say "pick a task and relaunch" rather than invent a
     path in the artist's home directory.
     """
+    ctx = ctx or context.get()
+    root = work_root(ctx)
+    if root and ctx.department in ARTIST_FOLDERS and ctx.artist:
+        return root + "/" + ctx.artist
+    return root
+
+
+def work_root(ctx=None):
+    """work_dir() without the artist's own folder: where every artist's
+    files on the task are found."""
     ctx = ctx or context.get()
     root = (ctx.entity_root or "").rstrip("/")
     if not root:
@@ -197,16 +213,26 @@ def scene_stem(ctx=None):
     it is not.
     """
     ctx = ctx or context.get()
-    bits = [ctx.entity_name or "", ctx.artist or "",
+    bits = [shot_code(ctx), ctx.artist or "",
             department_code(ctx.department)]
     return "_".join(b for b in bits if b) or "untitled"
+
+
+# Ingest names shots after their plate version (MV_003_010_02085217_v001);
+# a second version in the file name is noise, so names drop it.
+_ENTITY_VERSION_RE = re.compile(r"_v\d+$", re.IGNORECASE)
+
+
+def shot_code(ctx=None):
+    """`MV_003_010_02085217` for shot MV_003_010_02085217_v001."""
+    ctx = ctx or context.get()
+    return _ENTITY_VERSION_RE.sub("", ctx.entity_name or "")
 
 
 def task_prefix(ctx=None):
     """`AD1030` -- the part of the name every artist's files on this shot
     share."""
-    ctx = ctx or context.get()
-    return ctx.entity_name or "untitled"
+    return shot_code(ctx) or "untitled"
 
 
 def _task_bits(ctx):
@@ -279,11 +305,15 @@ def task_files(ctx=None, ext=None):
     the artist's next version, as do the 1.6 ones
     (`SEQ001_AD1030_jitesh_matchmove_v0004`).
     """
-    folder = work_dir(ctx)
+    ctx = ctx or context.get()
+    folder = work_root(ctx)
     if not folder or not os.path.isdir(folder):
         return []
+    folders = [folder]
+    if ctx.department in ARTIST_FOLDERS:
+        folders += sorted(folder + "/" + d for d in os.listdir(folder)
+                          if os.path.isdir(folder + "/" + d))
 
-    ctx = ctx or context.get()
     if ext is None:
         ext = extension(ctx)
     tail = r"_v(?P<version>\d+){0}$".format(
@@ -292,10 +322,15 @@ def task_files(ctx=None, ext=None):
     def dept(name):
         return "_" + re.escape(name) if name else ""
 
+    # Full shot name first: a 1.7 file (MV_..._v001_nandakumar_comp_v0001)
+    # also matches the shorter prefix, with "v001_nandakumar" as its user.
+    prefixes = [ctx.entity_name or "", task_prefix(ctx)]
     patterns = [
         re.compile(r"^{0}_(?P<user>.+?){1}{2}".format(
-            re.escape(task_prefix(ctx)),
-            dept(department_code(ctx.department)), tail), re.IGNORECASE),
+            re.escape(prefix), dept(department_code(ctx.department)), tail),
+            re.IGNORECASE)
+        for prefix in prefixes if prefix
+    ] + [
         re.compile(r"^{0}_(?P<user>.+?){1}{2}".format(
             re.escape(_v16_prefix(ctx)), dept(ctx.department), tail),
             re.IGNORECASE),
@@ -304,12 +339,12 @@ def task_files(ctx=None, ext=None):
     ]
 
     found = []
-    for name in os.listdir(folder):
+    for name, path in [(n, f + "/" + n) for f in folders
+                       for n in os.listdir(f)]:
         match = next((m for m in (p.match(name) for p in patterns) if m),
                      None)
-        if not match:
+        if not match or not os.path.isfile(path):
             continue
-        path = folder + "/" + name
         found.append({"path": path, "name": name,
                       "version": int(match.group("version")),
                       "user": match.group("user") or _owner(path),
