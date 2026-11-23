@@ -104,7 +104,7 @@ def run(job, sg_factory, make_movie, send_mail):
         ("version", lambda: _create_version(sg(), job)),
         ("upload", lambda: sg().upload("Version", job["version_id"],
                                        job["movie"], "sg_uploaded_movie")),
-        ("mail", lambda: send_mail(_recipients(sg(), job), *message(job))),
+        ("mail", lambda: _mail(sg(), job, send_mail)),
     ]
     connection = []
 
@@ -127,6 +127,15 @@ def run(job, sg_factory, make_movie, send_mail):
         save(job)
     os.remove(job["_file"])
     return job
+
+
+def _mail(sg, job, send_mail):
+    """A mail that cannot go (workstations may have no route to the SMTP
+    host) never holds the publish back: the Version is already up."""
+    try:
+        send_mail(_recipients(sg, job), *message(job))
+    except Exception as e:
+        job["mail_error"] = str(e)
 
 
 def _create_version(sg, job):

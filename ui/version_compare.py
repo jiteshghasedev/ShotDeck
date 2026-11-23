@@ -59,7 +59,8 @@ def local_media(version):
 
 
 _FRAME_RE = re.compile(r"^(?P<head>.*?)(?:%0?\d*d|#+|@+)(?P<tail>.*)$")
-FFMPEG = os.environ.get("FLOW_FFMPEG", "ffmpeg")
+# Not on workstations' PATH; ingest's static build is.
+FFMPEG = os.environ.get("FLOW_FFMPEG", "/software/pipeline/bin/ffmpeg")
 # Stills Qt reads without a plugin; anything else goes through ffmpeg.
 QT_STILLS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
 

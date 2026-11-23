@@ -7,7 +7,7 @@ import sys
 SG_SITE = os.environ.get("SG_SITE", "https://5and8.shotgrid.autodesk.com")
 SG_SCRIPT_NAME = os.environ.get("SG_SCRIPT_NAME", "SG_daemon")
 # No default: a script key must never live in the source of a public repository.
-SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY", "ja?loxpbfv6fpxhCflhehsula")
+SG_SCRIPT_KEY = os.environ.get("SG_SCRIPT_KEY", "")
 
 # Custom assignment field on Task. Studio uses this instead of task_assignees.
 TASK_OWNER_FIELD = "sg_assigned_to"
@@ -540,7 +540,7 @@ DCC_COMMANDS = {
     "3de": "DD3DE4",
     "mochapro": "mocha",
     "openrv": "rv",
-    "silhouette": "sfx",
+    "silhouette": "silhouette",     # the rez package's tool; there is no sfx
 }
 
 # Pretty names for the menu. Anything absent is title-cased.
