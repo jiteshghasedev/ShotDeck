@@ -239,14 +239,16 @@ STARTUP_VARS = {
     "blender": "BLENDER_USER_SCRIPTS",
     "substance": "SUBSTANCE_PAINTER_PLUGINS_PATH",
     "3de": "3DE4_PYTHON_CUSTOM_SCRIPTS_DIR",
+    # Silhouette imports each folder here that holds an __init__.py.
+    "silhouette": "SFX_SCRIPT_IMPORTS",
 }
 
 
 def _startup_folder(code):
     """Which startup/ folder a software code wants, or None.
 
-    Silhouette and Rhino have folders but no confirmed way to be pointed at
-    them, so they are absent here rather than wired to a guess.
+    Rhino has a folder but no confirmed way to be pointed at it, so it is
+    absent here rather than wired to a guess.
     """
     for name in STARTUP_VARS:
         if code.startswith(name):
@@ -301,6 +303,9 @@ def _tools_paths(software, rez_pkgs=()):
             # "&" is Houdini's own default path list. A HOUDINI_PATH without
             # it is a Houdini with none of its own tools.
             out["HOUDINI_PATH+"] = startup + os.pathsep + "&"
+        elif code.startswith("silhouette"):
+            # The package folder itself, not its parent.
+            out["SFX_SCRIPT_IMPORTS+"] = os.path.join(startup, "flow_startup")
         else:
             out[STARTUP_VARS[folder] + "+"] = startup
 
@@ -313,6 +318,9 @@ def _tools_paths(software, rez_pkgs=()):
     log.info("%s not in the rez resolve — falling back to the source tree",
              config.REZ_DCC_PACKAGE)
     out["PYTHONPATH+"] = os.pathsep.join(roots)
+    if code.startswith("silhouette"):
+        # Silhouette 2026+ no longer puts PYTHONPATH on sys.path.
+        out["SFX_SCRIPT_PATH+"] = os.pathsep.join(roots)
     return out
 
 

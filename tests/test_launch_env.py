@@ -44,6 +44,18 @@ def test_maya_gets_its_userSetup_folder_and_nuke_does_not():
     assert MAYA_STARTUP not in _entries(nuke)
 
 
+def test_silhouette_imports_the_flow_startup_package():
+    sfx = _paths("silhouette")
+    startup = sfx["SFX_SCRIPT_IMPORTS+"]
+    assert startup == os.path.join(config.DCC_SOURCE_ROOT, "startup",
+                                   "silhouette", "flow_startup")
+    assert os.path.isfile(os.path.join(startup, "__init__.py"))
+    assert _entries(sfx, "SFX_SCRIPT_PATH+")[0] == config.DCC_SOURCE_ROOT
+    assert "NUKE_PATH+" not in sfx
+    import rez_scan
+    assert rez_scan.command_for("silhouette") == "silhouette"
+
+
 def test_an_existing_pythonpath_is_kept_and_comes_last():
     project = {"id": 1, "name": "UAT6", "tank_name": "uat6"}
     env = build_env(project, {"code": "Maya"},

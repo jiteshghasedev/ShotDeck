@@ -6,12 +6,11 @@ imported and tested outside Nuke.
 
 import logging
 import os
-import shutil
 import sys
 
 from . import MENU_NAME, actions, common
 from .. import (context, lock, paths, picker, plates, publish, review,
-                shotgrid, version_publish)
+                shotgrid)
 
 # Nuke shows the logger in its terminal; a bare sys.stdout.write may not.
 log = logging.getLogger("flow")
@@ -81,7 +80,7 @@ def _watch_idle(every=60000):
     QApplication.instance().installEventFilter(watcher)
     timer = QTimer()
     timer.timeout.connect(lambda: _idle_tick(time.time()))
-    _watching.extend([watcher, timer])
+    common._watching.extend([watcher, timer])   # kept alive
     timer.start(every)
 
 
@@ -386,10 +385,7 @@ def snapshot_workfiles(scene, frames=None):
     if targets and nuke.root().modified():
         nuke.scriptSave()                       # the copy matches the render
     for target in sorted(targets):
-        folder = os.path.dirname(target)
-        if not os.path.isdir(folder):
-            os.makedirs(folder)
-        shutil.copy2(scene, target)
+        plates.copy_scene(scene, target)
         log.info("workfile %s", target)
     return sorted(targets)
 
@@ -638,109 +634,26 @@ def _upstream_read(node, seen=None):
     return None
 
 
-# -- Publish (flow_dcc/version_publish.py) --------------------------------
+# -- Publish (adapters/common.publish_render) ------------------------------
+
+MOVIE_TOOL = "nuke"             # the worker makes the movie in Nuke
+
+
+def is_modified():
+    return bool(_nuke().root().modified())
+
+
+def publish_runner():
+    """Nuke in terminal mode runs the background publish (version_worker)."""
+    return [_nuke().EXE_PATH, "-t"]
+
 
 def action_publish():
-    """Publish the open script's render: no questions asked.
-
-    The script that rendered (its workfile/ copy) goes to the publish folder
-    and ShotGrid; the movie, the Version, its upload and the mail happen in a
-    background process, so the artist keeps working. A script with no render
-    is not published: a Version without frames has nothing to review.
-    """
-    nuke = _nuke()
-    ctx = context.get()
-    scene = current_scene()
-    if not scene or not ctx.has_task:
-        return message("Open a script from Flow on a task, render it, then "
-                       "Publish.")
-    try:
-        publish.validate(ctx)
-        if nuke.root().modified():
-            nuke.scriptSave()
-        name = os.path.splitext(os.path.basename(scene))[0]
-        folder = os.path.dirname(plates.write_path(ctx, scene))
-        frames = plates.find_plate(folder)
-        if not frames or frames["first"] is None:
-            return message("{0} has no render yet. Render its Write to\n{1}"
-                           "\nthen Publish.".format(name, folder))
-        target = paths.publish_for(scene, ctx)
-        if os.path.exists(target):
-            return message("{0} is already published:\n{1}\n\nVersion Up, "
-                           "render and publish again.".format(name, target))
-        workfile = (snapshot_workfiles(scene, [frames["path"]]) or
-                    [scene])[0]
-        # Roto: the whole <name>/ folder goes to elements/roto/ as well.
-        copied = plates.publish_copy(os.path.dirname(os.path.dirname(
-            folder)), ctx)
-        if copied:
-            frames = plates.find_plate(
-                copied + "/" + plates.FOR_APPROVAL + "/" + name)
-        result = publish.publish_file(workfile, ctx)
-        job = version_publish.entry(name, frames["path"], frames["first"],
-                                    frames["last"], ctx)
-        process = version_publish.start(job, nuke.EXE_PATH)
-    except publish.PublishError as e:
-        return message(str(e))
-    except Exception as e:
-        return message("Publish failed: {0}".format(e))
-    _watch(job, process)
-    text = ("Publishing {0}.\n\nThe script is published{1}. The movie is "
-            "being made and uploaded to ShotGrid in the background: keep "
-            "working. A mail goes to {2} when it is done.").format(
-                name, "" if result.registered else
-                " on disk (not in ShotGrid: {0})".format(
-                    result.registration_error),
-                job["email"] or "you")
-    message(text)
-    return job
-
-
-def _watch(job, process, every=5000):
-    """Tell the artist how the background publish ended."""
-    try:
-        from PySide6.QtCore import QTimer
-    except ImportError:
-        from PySide2.QtCore import QTimer
-    timer = QTimer()
-    timer.setInterval(every)
-
-    def check():
-        if process.poll() is None:
-            return
-        timer.stop()
-        _watching.remove(timer)
-        if not os.path.isfile(job["_file"]):
-            log.info("published %s", job["name"])
-            return message("{0} is published to ShotGrid.".format(
-                job["name"]))
-        failed = version_publish.load(job["_file"])
-        message("Publishing {0} stopped at {1}\n\nWhat is done stays done. "
-                "Use {2} > Retry Pending Publishes to finish it.\nLog: {3}"
-                .format(job["name"], failed.get("error") or "an unknown step",
-                        MENU_NAME, os.path.splitext(job["_file"])[0] +
-                        ".log"))
-
-    timer.timeout.connect(check)
-    _watching.append(timer)             # a QTimer nobody holds is collected
-    timer.start()
-
-
-_watching = []
+    return common.publish_render(sys.modules[__name__])
 
 
 def retry_pending_publishes(quiet=False):
-    """Restart this machine's publishes whose worker failed or died."""
-    nuke = _nuke()
-    jobs = [j for j in version_publish.pending()
-            if version_publish.stalled(j)]
-    for job in jobs:
-        job["error"] = ""
-        _watch(job, version_publish.start(job, nuke.EXE_PATH))
-    if jobs or not quiet:
-        message("{0} publish(es) restarted in the background.".format(
-            len(jobs)) if jobs else "No publishes are waiting.")
-    return jobs
+    return common.retry_publishes(sys.modules[__name__], quiet)
 
 
 def _resume_publishes():

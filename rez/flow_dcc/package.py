@@ -84,10 +84,9 @@ def commands():
     # there is nothing to load into them. Their folder layouts still live in
     # flow_dcc/paths.py, and publishing them stays Flow's own job.
 
-    # Silhouette is deliberately not wired here yet: its startup mechanism has
-    # not been confirmed on the 5and8 farm, and guessing an environment
-    # variable would fail silently rather than loudly. Run
-    #   rez env silhouette flow_dcc -- python {root}/probe_silhouette.py
-    # inside Silhouette's interpreter and wire the result in. The adapter and
-    # the menu code are already written and work once something calls
-    # flow_dcc.install().
+    if "silhouette" in resolve or software.startswith("silhouette"):
+        # Silhouette imports every SFX_SCRIPT_IMPORTS folder holding an
+        # __init__.py. 2026+ no longer reads PYTHONPATH, so the tools go on
+        # SFX_SCRIPT_PATH as well.
+        env.SFX_SCRIPT_IMPORTS.append("{root}/startup/silhouette/flow_startup")
+        env.SFX_SCRIPT_PATH.append("{root}/python")

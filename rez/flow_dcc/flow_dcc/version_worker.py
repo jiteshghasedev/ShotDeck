@@ -1,10 +1,13 @@
-"""Run one publish job: `nuke -t version_worker.py <job.json>`.
+"""Run one publish job: `nuke -t version_worker.py <job.json>`, or
+`python3 version_worker.py <job.json>` for a job whose movie_tool is ffmpeg
+(Silhouette has no Nuke to make the movie).
 
 Started by version_publish.start() in a process of its own, so closing (or
-losing) the artist's Nuke does not stop it. See version_publish.py.
+losing) the artist's DCC does not stop it. See version_publish.py.
 """
 
 import os
+import subprocess
 import sys
 import traceback
 
@@ -17,7 +20,24 @@ from flow_dcc import shotgrid, version_publish  # noqa: E402
 CODECS = ("h264", "avc1")
 
 
+FFMPEG = os.environ.get("FLOW_FFMPEG", "/software/pipeline/bin/ffmpeg")
+
+
+def ffmpeg_movie(job):
+    """H.264 movie of the frames, as ingest makes its plate previews."""
+    if os.path.isfile(job["movie"]):
+        os.remove(job["movie"])         # a crash's half-written movie
+    subprocess.run([FFMPEG, "-y", "-v", "error",
+                    "-start_number", str(job["first"]), "-i", job["frames"],
+                    "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-pix_fmt", "yuv420p", job["movie"]],
+                   check=True, timeout=3600)
+
+
 def make_movie(job):
+    if job.get("movie_tool") == "ffmpeg":
+        return ffmpeg_movie(job)
     import nuke
     read = nuke.nodes.Read(file=job["frames"], first=job["first"],
                            last=job["last"])

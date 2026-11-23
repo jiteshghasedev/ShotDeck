@@ -79,7 +79,7 @@ DEFAULT_LAYOUT = ("{software}/{step}/scene", "")
 PUBLISH_LAYOUT = {
     "maya": "maya/publish/{step}",
     "nuke": "nuke/{step}/publish",
-    "silhouette": "silhouette/{step}/publish",
+    "silhouette": "nuke/{step}/publish",      # beside its scenes
     "houdini": "houdini/publish/{step}",
     "blender": "blender/publish/{step}",
     "tde4": "3DE/{step}/publish",
@@ -343,7 +343,7 @@ def task_files(ctx=None, ext=None):
                        for n in os.listdir(f)]:
         match = next((m for m in (p.match(name) for p in patterns) if m),
                      None)
-        if not match or not os.path.isfile(path):
+        if not match:                   # a .sfx project is a folder
             continue
         found.append({"path": path, "name": name,
                       "version": int(match.group("version")),

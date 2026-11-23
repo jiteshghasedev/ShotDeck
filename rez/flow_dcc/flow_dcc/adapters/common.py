@@ -11,8 +11,9 @@ import os
 import subprocess
 import sys
 
-from .. import (context, deadline, lock, paths, picker, publish, shotgrid,
-                usd, versioning)
+from . import MENU_NAME
+from .. import (context, deadline, lock, paths, picker, plates, publish,
+                shotgrid, usd, version_publish, versioning)
 
 
 def save(adapter):
@@ -125,6 +126,116 @@ def publish_scene(adapter):
 
     adapter.message(result.summary())
     return result
+
+
+def publish_render(adapter):
+    """Publish the open scene's render: no questions asked (Nuke, Silhouette).
+
+    The scene that rendered (its workfile/ copy) goes to the publish folder
+    and ShotGrid; roto also copies <name>/ to elements/roto/. The movie, the
+    Version, its upload and the mail happen in a background process, so the
+    artist keeps working. A scene with no render is not published: a Version
+    without frames has nothing to review.
+
+    The adapter supplies current_scene(), is_modified(), save_scene(),
+    message(), publish_runner() and MOVIE_TOOL.
+    """
+    ctx = context.get()
+    scene = adapter.current_scene()
+    if not scene or not ctx.has_task:
+        return adapter.message("Open a scene from Flow on a task, render it, "
+                               "then Publish.")
+    try:
+        publish.validate(ctx)
+        if adapter.is_modified():
+            adapter.save_scene(scene)
+        name = os.path.splitext(os.path.basename(scene))[0]
+        folder = os.path.dirname(plates.write_path(ctx, scene))
+        frames = plates.find_plate(folder)
+        if not frames or frames["first"] is None:
+            return adapter.message("{0} has no render yet. Render it to\n{1}"
+                                   "\nthen Publish.".format(name, folder))
+        target = paths.publish_for(scene, ctx)
+        if os.path.exists(target):
+            return adapter.message(
+                "{0} is already published:\n{1}\n\nVersion Up, render and "
+                "publish again.".format(name, target))
+        workfile = plates.workfile_for(frames["path"], scene)
+        if workfile:
+            plates.copy_scene(scene, workfile)
+        # Roto: the whole <name>/ folder goes to elements/roto/ as well.
+        copied = plates.publish_copy(os.path.dirname(os.path.dirname(
+            folder)), ctx)
+        if copied:
+            frames = plates.find_plate(
+                copied + "/" + plates.FOR_APPROVAL + "/" + name)
+        result = publish.publish_file(workfile or scene, ctx)
+        job = version_publish.entry(name, frames["path"], frames["first"],
+                                    frames["last"], ctx)
+        process = version_publish.start(job, adapter.publish_runner(),
+                                        adapter.MOVIE_TOOL)
+    except publish.PublishError as e:
+        return adapter.message(str(e))
+    except Exception as e:
+        return adapter.message("Publish failed: {0}".format(e))
+    watch_publish(adapter, job, process)
+    adapter.message(
+        "Publishing {0}.\n\nThe scene is published{1}. The movie is being "
+        "made and uploaded to ShotGrid in the background: keep working. A "
+        "mail goes to {2} when it is done.".format(
+            name, "" if result.registered else
+            " on disk (not in ShotGrid: {0})".format(
+                result.registration_error), job["email"] or "you"))
+    return job
+
+
+_watching = []                  # a QTimer nobody holds is collected
+
+
+def watch_publish(adapter, job, process, every=5000):
+    """Tell the artist how the background publish ended."""
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        from PySide2.QtCore import QTimer
+    timer = QTimer()
+    timer.setInterval(every)
+
+    def check():
+        if process.poll() is None:
+            return
+        timer.stop()
+        _watching.remove(timer)
+        if not os.path.isfile(job["_file"]):
+            return adapter.message("{0} is published to ShotGrid.".format(
+                job["name"]))
+        failed = version_publish.load(job["_file"])
+        adapter.message(
+            "Publishing {0} stopped at {1}\n\nWhat is done stays done. Use "
+            "{2} > Retry Pending Publishes to finish it.\nLog: {3}".format(
+                job["name"], failed.get("error") or "an unknown step",
+                MENU_NAME, os.path.splitext(job["_file"])[0] + ".log"))
+
+    timer.timeout.connect(check)
+    _watching.append(timer)
+    timer.start()
+
+
+def retry_publishes(adapter, quiet=False):
+    """Restart this machine's publishes whose worker failed or died. A job
+    runs the way it was started; one from before that was recorded runs the
+    way this DCC would start it."""
+    jobs = [j for j in version_publish.pending()
+            if version_publish.stalled(j)]
+    for job in jobs:
+        job["error"] = ""
+        runner = None if job.get("runner") else adapter.publish_runner()
+        watch_publish(adapter, job, version_publish.start(
+            job, runner, adapter.MOVIE_TOOL))
+    if jobs or not quiet:
+        adapter.message("{0} publish(es) restarted in the background.".format(
+            len(jobs)) if jobs else "No publishes are waiting.")
+    return jobs
 
 
 def submit_to_deadline(adapter):

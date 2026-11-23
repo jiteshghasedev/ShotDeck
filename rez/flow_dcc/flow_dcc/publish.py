@@ -153,7 +153,7 @@ def publish(adapter, ctx=None, description=""):
 
     # -- get the actual saved filename, and the version written in it
     work_path = adapter.current_scene() or target
-    if not os.path.isfile(work_path):
+    if not os.path.exists(work_path):   # file, or a .sfx project folder
         raise PublishError(
             "{0} reported a successful save but there is no file at\n{1}"
             .format(ctx.software or "The DCC", work_path))
@@ -180,7 +180,10 @@ def publish_file(work_path, ctx=None, description=""):
     if not os.path.isdir(publish_folder):
         os.makedirs(publish_folder)
 
-    shutil.copy2(work_path, publish_path)
+    if os.path.isdir(work_path):         # a Silhouette .sfx project folder
+        shutil.copytree(work_path, publish_path)
+    else:
+        shutil.copy2(work_path, publish_path)
 
     # -- validate the published file
     _verify_copy(work_path, publish_path)
@@ -209,16 +212,24 @@ def _verify_copy(source, destination):
     and the failure this catches is a truncated copy onto a full or dropped
     mount -- which size sees.
     """
-    if not os.path.isfile(destination):
+    if not os.path.exists(destination):
         raise PublishError(
             "The publish did not appear at\n{0}".format(destination))
 
-    written, expected = os.path.getsize(destination), os.path.getsize(source)
+    written, expected = _size(destination), _size(source)
     if written != expected:
         raise PublishError(
             "The published file is {0} bytes but the work file is {1}. The "
             "copy was truncated -- check free space on the publish "
             "mount.\n\n{2}".format(written, expected, destination))
+
+
+def _size(path):
+    """Bytes in a file, or in every file under a folder."""
+    if not os.path.isdir(path):
+        return os.path.getsize(path)
+    return sum(os.path.getsize(os.path.join(folder, name))
+               for folder, _dirs, files in os.walk(path) for name in files)
 
 
 # -- helpers used by the menu ---------------------------------------------

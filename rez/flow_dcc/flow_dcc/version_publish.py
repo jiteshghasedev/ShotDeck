@@ -211,17 +211,21 @@ def send_mail(to, subject, html):
 
 # -- the worker process ---------------------------------------------------
 
-def start(job, executable):
-    """Run the job in its own process, which outlives this Nuke.
+def start(job, runner=None, movie_tool=None):
+    """Run the job in its own process, which outlives the DCC.
 
-    executable is Nuke's own binary: the worker needs Nuke (in terminal
-    mode) to make the movie. Returns the Popen.
+    runner is the command that runs version_worker.py: Nuke in terminal mode
+    ([nuke, "-t"]), which also makes the movie, or a plain Python
+    (["/usr/bin/python3"]) with movie_tool "ffmpeg". Both are kept on the job,
+    so whichever DCC resumes it runs it the same way. Returns the Popen.
     """
+    if runner:
+        job["runner"], job["movie_tool"] = list(runner), movie_tool or "nuke"
     save(job)
     log = os.path.splitext(job["_file"])[0] + ".log"
     with open(log, "a") as out:
         process = subprocess.Popen(
-            [executable, "-t", WORKER, job["_file"]], stdout=out,
+            job["runner"] + [WORKER, job["_file"]], stdout=out,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True)
     job["pid"] = process.pid

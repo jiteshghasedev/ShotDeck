@@ -157,6 +157,40 @@ def write_path(ctx=None, script=None):
     return "{0}/{1}/{2}/{1}/{1}.%04d.exr".format(folder, name, FOR_APPROVAL)
 
 
+SPLINES = "nuke/roto/splines"
+_PADDING_RE = re.compile(r"%0?(\d*)d")
+
+
+def bracket_range(path, first, last):
+    """plate.%04d.exr -> plate.[1001-1050].exr, the form Silhouette's
+    fx.Source reads a sequence in. A movie (first None) is left alone."""
+    if first is None:
+        return path
+    return _PADDING_RE.sub(lambda m: "[{0:0{2}d}-{1:0{2}d}]".format(
+        first, last, int(m.group(1) or 0)), path, count=1)
+
+
+def splines_path(ctx, scene, ext):
+    """nuke/roto/splines/<scene name><ext> (lead feedback 11.5)."""
+    name = os.path.splitext(os.path.basename(scene.rstrip("/")))[0]
+    return "{0}/{1}/{2}{3}".format(ctx.entity_root, SPLINES, name, ext)
+
+
+def copy_scene(scene, target):
+    """Copy a scene to target: a file (.nk), or a folder (a Silhouette .sfx
+    project is a directory). An older copy at target is replaced."""
+    folder = os.path.dirname(target)
+    if folder and not os.path.isdir(folder):
+        os.makedirs(folder)
+    if os.path.isdir(scene):
+        if os.path.isdir(target):
+            shutil.rmtree(target)
+        shutil.copytree(scene, target)
+    else:
+        shutil.copy2(scene, target)
+    return target
+
+
 def workfile_for(frames, script):
     """Where script is copied when frames render, or None when frames are
     not in the for_approval layout: .../<name>/workfile/<script name>."""
